@@ -4,6 +4,9 @@
   "description": "Pi Extensions Manager: interactive extension enable/disable selector for Pi.",
   "type": "module",
   "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
   "keywords": [
     "pi-package"
   ],
