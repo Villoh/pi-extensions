@@ -150,6 +150,13 @@ export async function showSettings(
         currentValue: settings.providers[provider] ? "enabled" : "disabled",
         values: ["enabled", "disabled"],
       })),
+      {
+        id: "hideEmails",
+        label: "Hide emails",
+        description: "Mask account emails (e.g. j***@***.com) in labels",
+        currentValue: settings.hideEmails ? "enabled" : "disabled",
+        values: ["enabled", "disabled"],
+      },
       ...(accounts.length > 0
         ? [
             {
@@ -187,6 +194,7 @@ export async function showSettings(
         if (providerIds.has(id as ProviderName)) {
           settings.providers[id as ProviderName] = value === "enabled";
         }
+        if (id === "hideEmails") settings.hideEmails = value === "enabled";
         if (id === "accounts") {
           const checked = new Set(value.split(",").filter(Boolean));
           for (const account of accounts) settings.accounts[account.id] = checked.has(account.id);
@@ -208,6 +216,8 @@ export async function showSettings(
               previousValue = String(previous.maxVisibleAccounts);
             } else if (id === "accounts") {
               previousValue = accountsSummary(accounts, previous.accounts);
+            } else if (id === "hideEmails") {
+              previousValue = previous.hideEmails ? "enabled" : "disabled";
             } else {
               previousValue = previous.providers[id as ProviderName] ? "enabled" : "disabled";
             }

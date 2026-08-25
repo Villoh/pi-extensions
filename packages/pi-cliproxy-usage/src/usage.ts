@@ -54,8 +54,9 @@ async function fetchUsage(
   provider: ProviderName,
   auth: AuthFile,
   file: string,
+  hideEmails: boolean,
 ): Promise<AccountUsage> {
-  const label = auth.email || basename(file, ".json").replace(/^(claude|codex|xai)-/, "");
+  const label = accountLabel(auth, file, hideEmails);
   try {
     if (!auth.access_token) throw new Error("missing access_token");
     if (provider === "claude") {
@@ -103,8 +104,22 @@ async function loadAuth(
   }
 }
 
-function accountLabel(auth: AuthFile, name: string): string {
-  return auth.email || basename(name, ".json").replace(/^(claude|codex|xai)-/, "");
+function maskPart(part: string): string {
+  return part ? `${part[0]}${"*".repeat(Math.max(part.length - 1, 3))}` : part;
+}
+
+function maskEmail(email: string): string {
+  const at = email.indexOf("@");
+  if (at <= 0) return email;
+  const domain = email.slice(at + 1);
+  const dot = domain.lastIndexOf(".");
+  const tld = dot > 0 ? domain.slice(dot) : "";
+  return `${maskPart(email.slice(0, at))}@***${tld}`;
+}
+
+function accountLabel(auth: AuthFile, name: string, hideEmails: boolean): string {
+  const label = auth.email || basename(name, ".json").replace(/^(claude|codex|xai)-/, "");
+  return hideEmails && auth.email ? maskEmail(label) : label;
 }
 
 async function readAccount(
@@ -116,7 +131,7 @@ async function readAccount(
   if (!loaded) return undefined;
   const { auth, provider } = loaded;
   if (!config.providers[provider] || config.accounts[name] === false) return undefined;
-  return fetchUsage(provider, auth, join(dir, name));
+  return fetchUsage(provider, auth, join(dir, name), config.hideEmails);
 }
 
 export async function readAccounts(config: Config): Promise<AccountUsage[]> {
@@ -132,7 +147,7 @@ export async function readAccounts(config: Config): Promise<AccountUsage[]> {
 
 /** Lists accounts available under accountsDir, ignoring the enabled/disabled toggles. */
 export async function discoverAccounts(
-  config: Pick<Config, "accountsDir">,
+  config: Pick<Config, "accountsDir" | "hideEmails">,
 ): Promise<AccountSummary[]> {
   const dir = expandHome(config.accountsDir);
   try {
@@ -141,7 +156,11 @@ export async function discoverAccounts(
       names.map(async (name) => {
         const loaded = await loadAuth(dir, name);
         if (!loaded) return undefined;
-        return { id: name, label: accountLabel(loaded.auth, name), provider: loaded.provider };
+        return {
+          id: name,
+          label: accountLabel(loaded.auth, name, config.hideEmails),
+          provider: loaded.provider,
+        };
       }),
     );
     return accounts.filter(Boolean) as AccountSummary[];

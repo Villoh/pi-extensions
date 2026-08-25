@@ -7,6 +7,8 @@ export type Settings = {
   providers: Record<ProviderName, boolean>;
   /** Per-account enable flag, keyed by auth file name. Missing key means enabled. */
   accounts: Record<string, boolean>;
+  /** Mask account emails (e.g. "j***@example.com") wherever labels are shown. */
+  hideEmails: boolean;
 };
 
 export type Config = Settings;

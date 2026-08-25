@@ -8,6 +8,7 @@ export const DEFAULT_SETTINGS: Settings = {
   maxVisibleAccounts: 4,
   providers: { claude: true, codex: true, grok: true },
   accounts: {},
+  hideEmails: false,
 };
 
 type JsonObject = Record<string, unknown>;
@@ -56,6 +57,11 @@ export function normalizeSettings(value: unknown): {
     settings.maxVisibleAccounts = value.maxVisibleAccounts;
   } else if (value.maxVisibleAccounts !== undefined) {
     warnings.push("ignored invalid maxVisibleAccounts");
+  }
+  if (typeof value.hideEmails === "boolean") {
+    settings.hideEmails = value.hideEmails;
+  } else if (value.hideEmails !== undefined) {
+    warnings.push("ignored invalid hideEmails");
   }
   for (const provider of ["claude", "codex", "grok"] as const) {
     if (typeof providers[provider] === "boolean") {

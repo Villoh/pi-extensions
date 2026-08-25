@@ -28,6 +28,7 @@ test("normalizeSettings validates values and preserves raw fields", () => {
     maxVisibleAccounts: 0,
     providers: { claude: false, codex: "yes", future: true },
     accounts: { "claude-user.json": false, "codex-user.json": "yes" },
+    hideEmails: "yes",
     future: { enabled: true },
   });
   assert.equal(loaded.settings.accountsDir, DEFAULT_SETTINGS.accountsDir);
@@ -35,13 +36,20 @@ test("normalizeSettings validates values and preserves raw fields", () => {
   assert.equal(loaded.settings.maxVisibleAccounts, DEFAULT_SETTINGS.maxVisibleAccounts);
   assert.equal(loaded.settings.providers.claude, false);
   assert.deepEqual(loaded.settings.accounts, { "claude-user.json": false });
+  assert.equal(loaded.settings.hideEmails, DEFAULT_SETTINGS.hideEmails);
   assert.deepEqual(loaded.raw.future, { enabled: true });
   assert.deepEqual(loaded.warnings, [
     "ignored invalid accountsDir",
     "ignored invalid maxVisibleAccounts",
+    "ignored invalid hideEmails",
     "ignored invalid providers.codex",
     "ignored invalid accounts.codex-user.json",
   ]);
+});
+
+test("normalizeSettings accepts hideEmails", () => {
+  const loaded = normalizeSettings({ hideEmails: true });
+  assert.equal(loaded.settings.hideEmails, true);
 });
 
 test("loadSettings blocks writes for malformed JSON", async () => {

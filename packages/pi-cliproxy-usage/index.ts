@@ -97,6 +97,7 @@ export default function (pi: ExtensionAPI) {
         `Visible accounts: ${loaded.settings.maxVisibleAccounts}`,
         `Providers: ${providers || "none"}`,
         `Accounts disabled: ${disabledAccounts || "none"}`,
+        `Hide emails: ${loaded.settings.hideEmails ? "yes" : "no"}`,
         `Source: ${Object.keys(loaded.raw).length ? "settings file" : "defaults"}`,
       ].join("\n"),
       loaded.warnings.length ? "warning" : "info",
