@@ -1,53 +1,53 @@
 name: Release
 
 on:
-    workflow_dispatch:
-    push:
-        branches: [main]
+      workflow_dispatch:
+      push:
+            branches: [main]
 
 permissions:
-    contents: write
-    pull-requests: write
-    id-token: write
+      contents: write
+      pull-requests: write
+      id-token: write
 
 concurrency:
-    group: changesets-${{ github.ref }}
-    cancel-in-progress: false
+      group: changesets-${{ github.ref }}
+      cancel-in-progress: false
 
 jobs:
-    release:
-        runs-on: ubuntu-latest
-        steps:
-            - uses: actions/checkout@v4
-              with:
-                  fetch-depth: 0
+      release:
+            runs-on: ubuntu-latest
+            steps:
+                  - uses: actions/checkout@v4
+                    with:
+                          fetch-depth: 0
 
-            - uses: actions/setup-node@v4
-              with:
-                  node-version: 22
-                  registry-url: https://registry.npmjs.org
+                  - uses: actions/setup-node@v4
+                    with:
+                          node-version: 22
+                          registry-url: https://registry.npmjs.org
 
-            # Trusted Publishing (OIDC) needs npm >= 11.5.1; Node 22 bundles npm 10.x.
-            - run: npm install -g npm@latest
-            - run: npm --version
+                  # Trusted Publishing (OIDC) needs npm >= 11.5.1; Node 22 bundles npm 10.x.
+                  - run: npm install -g npm@latest
+                  - run: npm --version
 
-            - run: npm install
-            - run: npm run check
-            - run: npm run test
+                  - run: npm install
+                  - run: npm run check
+                  - run: npm run test
 
-            - name: Create version PR or publish to npm
-              uses: changesets/action@v2
-              with:
-                  version-script: npm run version-packages
-                  publish-script: npm run publish-packages
-                  commit-message: "chore(release): version packages"
-                  pr-title: "chore(release): version packages"
-                  create-github-releases: true
-              env:
-                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-                  # Must be non-empty for npm's OIDC (Trusted Publishing)
-                  # detection to trigger with setup-node's registry-url.
-                  # A real NPM_TOKEN secret, if ever set, wins as a genuine
-                  # fallback when OIDC is unavailable.
-                  NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN || 'placeholder' }}
-                  NPM_CONFIG_PROVENANCE: "true"
+                  - name: Create version PR or publish to npm
+                    uses: changesets/action@v2
+                    with:
+                          version-script: npm run version-packages
+                          publish-script: npm run publish-packages
+                          commit-message: "chore(release): version packages"
+                          pr-title: "chore(release): version packages"
+                          create-github-releases: true
+                    env:
+                          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+                          # Must be non-empty for npm's OIDC (Trusted Publishing)
+                          # detection to trigger with setup-node's registry-url.
+                          # A real NPM_TOKEN secret, if ever set, wins as a genuine
+                          # fallback when OIDC is unavailable.
+                          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN || 'placeholder' }}
+                          NPM_CONFIG_PROVENANCE: "true"

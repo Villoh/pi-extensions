@@ -77,4 +77,4 @@ Token refresh is deliberately left to CLIProxyAPI. If provider returns `401`/`40
 
 ## Support
 
-Report bugs and request features in [GitHub Issues](https://github.com/Villoh/pi-cliproxy-usage/issues).
+Report bugs and request features in [GitHub Issues](https://github.com/Villoh/pi-extensions/issues).

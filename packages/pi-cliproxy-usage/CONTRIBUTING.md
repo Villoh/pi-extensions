@@ -7,8 +7,8 @@ Contributions are welcome. Keep changes focused, typed, and easy to review.
 Requirements: Node.js 20+ and Pi Coding Agent.
 
 ```bash
-git clone git@github.com:Villoh/pi-cliproxy-usage.git
-cd pi-cliproxy-usage
+git clone git@github.com:Villoh/pi-extensions.git
+cd pi-extensions/packages/pi-cliproxy-usage
 npm install
 ```
 
