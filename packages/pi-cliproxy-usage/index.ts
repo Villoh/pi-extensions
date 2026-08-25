@@ -85,6 +85,10 @@ export default function (pi: ExtensionAPI) {
       .filter(([, enabled]) => enabled)
       .map(([name]) => name)
       .join(", ");
+    const disabledAccounts = Object.entries(loaded.settings.accounts)
+      .filter(([, enabled]) => !enabled)
+      .map(([id]) => id)
+      .join(", ");
     ctx.ui.notify(
       [
         `Settings: ${loaded.path}`,
@@ -92,6 +96,7 @@ export default function (pi: ExtensionAPI) {
         `Refresh: ${loaded.settings.refreshMinutes} min`,
         `Visible accounts: ${loaded.settings.maxVisibleAccounts}`,
         `Providers: ${providers || "none"}`,
+        `Accounts disabled: ${disabledAccounts || "none"}`,
         `Source: ${Object.keys(loaded.raw).length ? "settings file" : "defaults"}`,
       ].join("\n"),
       loaded.warnings.length ? "warning" : "info",

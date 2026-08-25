@@ -2,7 +2,7 @@ import { readdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { parseClaude, parseCodex, parseGrok, toNumber } from "./parsers.js";
-import type { AccountUsage, Config, ProviderName } from "./types.js";
+import type { AccountSummary, AccountUsage, Config, ProviderName } from "./types.js";
 
 type AuthFile = {
   type?: string;
@@ -89,20 +89,34 @@ async function fetchUsage(
   }
 }
 
+async function loadAuth(
+  dir: string,
+  name: string,
+): Promise<{ auth: AuthFile; provider: ProviderName } | undefined> {
+  try {
+    const auth = JSON.parse(await readFile(join(dir, name), "utf8")) as AuthFile;
+    const provider = providerName(auth.type);
+    if (!provider || auth.disabled) return undefined;
+    return { auth, provider };
+  } catch {
+    return undefined;
+  }
+}
+
+function accountLabel(auth: AuthFile, name: string): string {
+  return auth.email || basename(name, ".json").replace(/^(claude|codex|xai)-/, "");
+}
+
 async function readAccount(
   dir: string,
   name: string,
   config: Config,
 ): Promise<AccountUsage | undefined> {
-  try {
-    const file = join(dir, name);
-    const auth = JSON.parse(await readFile(file, "utf8")) as AuthFile;
-    const provider = providerName(auth.type);
-    if (!provider || auth.disabled || !config.providers[provider]) return undefined;
-    return fetchUsage(provider, auth, file);
-  } catch {
-    return undefined;
-  }
+  const loaded = await loadAuth(dir, name);
+  if (!loaded) return undefined;
+  const { auth, provider } = loaded;
+  if (!config.providers[provider] || config.accounts[name] === false) return undefined;
+  return fetchUsage(provider, auth, join(dir, name));
 }
 
 export async function readAccounts(config: Config): Promise<AccountUsage[]> {
@@ -111,6 +125,26 @@ export async function readAccounts(config: Config): Promise<AccountUsage[]> {
     const names = (await readdir(dir)).filter((name) => name.toLowerCase().endsWith(".json"));
     const accounts = await Promise.all(names.map((name) => readAccount(dir, name, config)));
     return accounts.filter(Boolean) as AccountUsage[];
+  } catch {
+    return [];
+  }
+}
+
+/** Lists accounts available under accountsDir, ignoring the enabled/disabled toggles. */
+export async function discoverAccounts(
+  config: Pick<Config, "accountsDir">,
+): Promise<AccountSummary[]> {
+  const dir = expandHome(config.accountsDir);
+  try {
+    const names = (await readdir(dir)).filter((name) => name.toLowerCase().endsWith(".json"));
+    const accounts = await Promise.all(
+      names.map(async (name) => {
+        const loaded = await loadAuth(dir, name);
+        if (!loaded) return undefined;
+        return { id: name, label: accountLabel(loaded.auth, name), provider: loaded.provider };
+      }),
+    );
+    return accounts.filter(Boolean) as AccountSummary[];
   } catch {
     return [];
   }

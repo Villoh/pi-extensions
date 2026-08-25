@@ -4,13 +4,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { Config } from "../src/types.js";
-import { readAccounts } from "../src/usage.js";
+import { discoverAccounts, readAccounts } from "../src/usage.js";
 
 const config = (accountsDir: string): Config => ({
   accountsDir,
   refreshMinutes: 5,
   maxVisibleAccounts: 4,
   providers: { claude: true, codex: true, grok: true },
+  accounts: {},
 });
 
 test("readAccounts returns empty for missing directory", async () => {
@@ -54,6 +55,43 @@ test("readAccounts reports missing token without making a request", async () => 
         label: "me@example.com",
         error: "missing access_token",
       },
+    ]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("readAccounts skips accounts disabled individually via config.accounts", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-cliproxy-usage-"));
+  try {
+    await writeFile(
+      join(dir, "xai-local.json"),
+      JSON.stringify({ type: "xai", email: "me@example.com" }),
+    );
+    const value = config(dir);
+    value.accounts["xai-local.json"] = false;
+    assert.deepEqual(await readAccounts(value), []);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("discoverAccounts lists available accounts regardless of enabled state", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-cliproxy-usage-"));
+  try {
+    await Promise.all([
+      writeFile(
+        join(dir, "xai-local.json"),
+        JSON.stringify({ type: "xai", email: "me@example.com" }),
+      ),
+      writeFile(join(dir, "broken.json"), "{"),
+      writeFile(
+        join(dir, "disabled.json"),
+        JSON.stringify({ type: "claude", access_token: "x", disabled: true }),
+      ),
+    ]);
+    assert.deepEqual(await discoverAccounts({ accountsDir: dir }), [
+      { id: "xai-local.json", label: "me@example.com", provider: "grok" },
     ]);
   } finally {
     await rm(dir, { recursive: true, force: true });

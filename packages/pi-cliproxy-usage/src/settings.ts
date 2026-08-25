@@ -7,6 +7,7 @@ export const DEFAULT_SETTINGS: Settings = {
   refreshMinutes: 5,
   maxVisibleAccounts: 4,
   providers: { claude: true, codex: true, grok: true },
+  accounts: {},
 };
 
 type JsonObject = Record<string, unknown>;
@@ -62,6 +63,14 @@ export function normalizeSettings(value: unknown): {
     } else if (providers[provider] !== undefined) {
       warnings.push(`ignored invalid providers.${provider}`);
     }
+  }
+  if (isObject(value.accounts)) {
+    for (const [id, enabled] of Object.entries(value.accounts)) {
+      if (typeof enabled === "boolean") settings.accounts[id] = enabled;
+      else warnings.push(`ignored invalid accounts.${id}`);
+    }
+  } else if (value.accounts !== undefined) {
+    warnings.push("ignored invalid accounts");
   }
   return { settings, raw: value, warnings };
 }
@@ -141,6 +150,10 @@ export async function saveSettings(
     providers: {
       ...(isObject(raw.providers) ? raw.providers : {}),
       ...settings.providers,
+    },
+    accounts: {
+      ...(isObject(raw.accounts) ? raw.accounts : {}),
+      ...settings.accounts,
     },
   };
   await mkdir(dirname(settingsPath), { recursive: true });

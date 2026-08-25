@@ -5,9 +5,17 @@ export type Settings = {
   refreshMinutes: number;
   maxVisibleAccounts: number;
   providers: Record<ProviderName, boolean>;
+  /** Per-account enable flag, keyed by auth file name. Missing key means enabled. */
+  accounts: Record<string, boolean>;
 };
 
 export type Config = Settings;
+
+export type AccountSummary = {
+  id: string;
+  label: string;
+  provider: ProviderName;
+};
 
 export type UsageWindow = {
   used: number;

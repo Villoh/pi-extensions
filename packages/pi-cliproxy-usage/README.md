@@ -56,13 +56,18 @@ Older `~/.pi/agent/extensions/pi-cliproxy-usage/config.json` files migrate autom
     "claude": true,
     "codex": true,
     "grok": true
+  },
+  "accounts": {
+    "claude-user@example.com.json": false
   }
 }
 ```
 
 Extension reads top-level CLIProxyAPI auth JSON files with `type` equal to `claude`, `codex`, or `xai`. Disabled auth files are skipped. Credentials stay local and are sent only to official provider usage endpoints documented by OpenUsage.
 
-Accepted values: `accountsDir` is a non-empty string; `refreshMinutes` and `maxVisibleAccounts` are integers of at least `1`; provider values are booleans. Widget prioritizes errors, then accounts with highest usage, and shows an overflow row when more accounts exist. Invalid values are ignored with a warning. Unknown fields are preserved when saving.
+`providers` toggles a whole provider on or off. `accounts` toggles individual accounts within an enabled provider, keyed by the auth file name in `accountsDir`. An account missing from `accounts` is enabled by default. In `/cliproxy-usage settings`, open the "Accounts" row to see every discovered account and check/uncheck it (space to toggle, enter to confirm) instead of editing the file by hand.
+
+Accepted values: `accountsDir` is a non-empty string; `refreshMinutes` and `maxVisibleAccounts` are integers of at least `1`; provider and account values are booleans. Widget prioritizes errors, then accounts with highest usage, and shows an overflow row when more accounts exist. Invalid values are ignored with a warning. Unknown fields are preserved when saving.
 
 ## Commands
 

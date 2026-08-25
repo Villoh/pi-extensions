@@ -27,17 +27,20 @@ test("normalizeSettings validates values and preserves raw fields", () => {
     refreshMinutes: 10,
     maxVisibleAccounts: 0,
     providers: { claude: false, codex: "yes", future: true },
+    accounts: { "claude-user.json": false, "codex-user.json": "yes" },
     future: { enabled: true },
   });
   assert.equal(loaded.settings.accountsDir, DEFAULT_SETTINGS.accountsDir);
   assert.equal(loaded.settings.refreshMinutes, 10);
   assert.equal(loaded.settings.maxVisibleAccounts, DEFAULT_SETTINGS.maxVisibleAccounts);
   assert.equal(loaded.settings.providers.claude, false);
+  assert.deepEqual(loaded.settings.accounts, { "claude-user.json": false });
   assert.deepEqual(loaded.raw.future, { enabled: true });
   assert.deepEqual(loaded.warnings, [
     "ignored invalid accountsDir",
     "ignored invalid maxVisibleAccounts",
     "ignored invalid providers.codex",
+    "ignored invalid accounts.codex-user.json",
   ]);
 });
 
@@ -59,14 +62,15 @@ test("saveSettings preserves unknown fields", async () => {
   try {
     const path = join(dir, "settings.json");
     await saveSettings(
-      { ...DEFAULT_SETTINGS, refreshMinutes: 15 },
-      { future: true, providers: { future: false } },
+      { ...DEFAULT_SETTINGS, refreshMinutes: 15, accounts: { "claude-user.json": false } },
+      { future: true, providers: { future: false }, accounts: { "old.json": true } },
       path,
     );
     const saved = JSON.parse(await readFile(path, "utf8"));
     assert.equal(saved.future, true);
     assert.equal(saved.providers.future, false);
     assert.equal(saved.refreshMinutes, 15);
+    assert.deepEqual(saved.accounts, { "old.json": true, "claude-user.json": false });
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
