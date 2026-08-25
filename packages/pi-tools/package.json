@@ -1,0 +1,32 @@
+{
+  "name": "@villoh/pi-tools",
+  "version": "0.0.1",
+  "description": "Interactive /tools selector to enable/disable tools per session, persisted across reloads.",
+  "type": "module",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Villoh/pi-extensions.git",
+    "directory": "packages/pi-tools"
+  },
+  "keywords": [
+    "pi-package"
+  ],
+  "files": [
+    "tools.ts",
+    "README.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": [
+      "./tools.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  }
+}

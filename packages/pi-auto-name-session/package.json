@@ -1,0 +1,34 @@
+{
+  "name": "@villoh/pi-auto-name-session",
+  "version": "0.21.1",
+  "description": "Pi extension: replace Pi's first-message session label with a generated title",
+  "keywords": [
+    "pi-package",
+    "pi-extension"
+  ],
+  "type": "module",
+  "license": "MIT",
+  "author": "Agnish Chakraborty",
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "test": "node --experimental-strip-types --test src/model.test.ts src/title.test.ts"
+  },
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  }
+}

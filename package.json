@@ -1,0 +1,34 @@
+{
+  "name": "pi-extensions",
+  "version": "0.0.0",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
+  "pi": {
+    "extensions": [
+      "./packages/pi-auto-name-session/src/index.ts",
+      "./packages/pi-btw/extensions/btw.ts",
+      "./packages/pi-cliproxy-usage/index.ts",
+      "./packages/pi-extensions-manager/extensions.ts",
+      "./packages/pi-skill-manager/skills.ts",
+      "./packages/pi-tools/tools.ts"
+    ],
+    "skills": [
+      "./packages/pi-btw/skills"
+    ]
+  },
+  "scripts": {
+    "format": "biome format --write .",
+    "lint": "biome check .",
+    "check": "npm run lint && npm run check --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "changeset": "changeset",
+    "version-packages": "changeset version",
+    "publish-packages": "changeset publish"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.10",
+    "@changesets/cli": "^3.0.1"
+  }
+}

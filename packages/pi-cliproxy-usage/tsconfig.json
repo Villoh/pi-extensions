@@ -1,0 +1,17 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "baseUrl": ".",
+    "paths": {
+      "@earendil-works/pi-coding-agent": [
+        "C:/Users/mikel/scoop/persist/pnpm/store/v11/links/@earendil-works/pi-coding-agent/0.80.10/a8349c7e9f56056cfe612d86832f8faf4ac25d5137a1340bb6a5e827071c8129/node_modules/@earendil-works/pi-coding-agent/dist/index.d.ts"
+      ]
+    }
+  },
+  "include": ["index.ts", "src/**/*.ts", "test/**/*.ts"]
+}

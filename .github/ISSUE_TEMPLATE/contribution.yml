@@ -1,0 +1,68 @@
+name: Contribution proposal
+description: Propose implementation work before opening a pull request
+title: "contrib: "
+labels: [contribution, needs-triage]
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        Open this issue before implementation so scope and approach can be
+        agreed before a pull request is created.
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Problem context
+      description: >-
+        What problem are you planning to solve, and who encounters it?
+    validations:
+      required: true
+
+  - type: textarea
+    id: scope
+    attributes:
+      label: Proposed scope
+      description: List intended changes and explicitly excluded work.
+      placeholder: |
+        In scope:
+        - ...
+
+        Out of scope:
+        - ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: approach
+    attributes:
+      label: Implementation approach
+      description: Which modules will change and why?
+    validations:
+      required: true
+
+  - type: textarea
+    id: tests
+    attributes:
+      label: Test plan
+      description: Describe unit tests and manual Pi verification.
+      placeholder: |
+        - Add parser tests for ...
+        - Run npm test
+        - Run npm run check
+        - Verify with pi -e ./index.ts
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I read AGENTS.md and CONTRIBUTING.md.
+          required: true
+        - label: I searched existing issues and pull requests.
+          required: true
+        - label: I will use Conventional Commits.
+          required: true
+        - label: I will not include credentials or private account data.
+          required: true

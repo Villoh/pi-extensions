@@ -1,0 +1,7 @@
+# Default owner for all repository changes
+* @Villoh
+
+# Sensitive project and automation files
+/.github/ @Villoh
+/package.json @Villoh
+/package-lock.json @Villoh
