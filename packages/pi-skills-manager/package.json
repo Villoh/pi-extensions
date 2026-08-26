@@ -7,6 +7,11 @@
   "publishConfig": {
     "access": "public"
   },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Villoh/pi-extensions.git",
+    "directory": "packages/pi-skills-manager"
+  },
   "keywords": [
     "pi-package",
     "pi-extension"

@@ -15,6 +15,11 @@
   "publishConfig": {
     "access": "public"
   },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Villoh/pi-extensions.git",
+    "directory": "packages/pi-auto-name-session"
+  },
   "scripts": {
     "test": "node --experimental-strip-types --test src/model.test.ts src/title.test.ts"
   },
