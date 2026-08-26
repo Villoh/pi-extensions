@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { Theme, UiContext } from "../src/types.js";
-import { formatCompact, formatDetails, renderUsage, usageBar } from "../src/ui.js";
+import {
+  createUsageReport,
+  formatCompact,
+  renderReport,
+  renderUsage,
+  usageBar,
+} from "../src/ui.js";
 
 test("usageBar clamps usage and supports custom widths", () => {
   assert.equal(usageBar(-10), "──────────");
@@ -193,47 +199,66 @@ test("formatCompact handles errors and missing windows", () => {
   );
 });
 
-test("formatDetails handles empty, success, errors, and missing data", () => {
-  assert.equal(formatDetails([]), "No enabled CLIProxyAPI accounts found.");
+test("createUsageReport follows /session's titled-section hierarchy", () => {
+  const report = createUsageReport([
+    {
+      provider: "claude",
+      label: "me",
+      session: { used: 12.6 },
+      weekly: { used: 44.4 },
+    },
+    { provider: "grok", label: "bad", error: "HTTP 403" },
+    { provider: "codex", label: "empty" },
+  ]);
   assert.equal(
-    formatDetails([
-      {
-        provider: "claude",
-        label: "me",
-        session: { used: 12.6 },
-        weekly: { used: 44.4 },
-      },
-      { provider: "grok", label: "bad", error: "HTTP 403" },
-      { provider: "codex", label: "empty" },
-    ]),
+    renderReport(report, { fg: (_color, text) => text, bold: (text) => text }),
     [
-      "claude/me: Session 13% used · Weekly 44% used",
-      "grok/bad: HTTP 403",
-      "codex/empty: No usage window",
+      "CLIProxyAPI Usage",
+      "",
+      "Claude · me",
+      "Session: ━───────── 13%",
+      "Weekly: ━━━━────── 44%",
+      "",
+      "Grok · bad",
+      "Error: HTTP 403",
+      "",
+      "Codex · empty",
+      "Usage: No usage window",
+      "",
+      "/cliproxy-usage refresh · settings",
     ].join("\n"),
   );
+  assert.deepEqual(createUsageReport([]).sections, [
+    { title: "Accounts", rows: [{ label: "Status", value: "No enabled accounts found." }] },
+  ]);
 });
 
-test("formatDetails includes a reset countdown when the upstream API supplies a timestamp", () => {
+test("createUsageReport includes reset countdowns and masks labels", () => {
   const resetsAt = new Date(Date.now() + 2 * 60 * 60_000 + 15 * 60_000);
-  assert.equal(
-    formatDetails([{ provider: "claude", label: "me", session: { used: 50, resetsAt } }]),
-    "claude/me: Session 50% used (resets in 2h 15m)",
+  const report = createUsageReport(
+    [{ provider: "claude", label: "john@example.com", session: { used: 50, resetsAt } }],
+    true,
+  );
+  assert.equal(report.sections[0]?.title, "Claude · j***@***.com");
+  assert.match(report.sections[0]?.rows[0]?.value ?? "", /50% · resets in 2h 15m/);
+  assert.match(
+    formatCompact([{ provider: "claude", label: "john@example.com", session: { used: 10 } }], true),
+    /Claude j\*\*\*@\*\*\*\.com/,
   );
 });
 
-test("formatDetails and formatCompact mask email labels when requested", () => {
-  const item = { provider: "claude" as const, label: "john@example.com", session: { used: 10 } };
-  assert.equal(formatDetails([item], true), "claude/j***@***.com: Session 10% used");
-  assert.match(formatCompact([item], true), /Claude j\*\*\*@\*\*\*\.com/);
-});
-
-test("formatDetails and formatCompact render DeepSeek balances instead of a percentage", () => {
-  const item = {
-    provider: "deepseek" as const,
-    label: "deepseek",
-    balance: { amount: 9.99, currency: "USD" },
-  };
-  assert.equal(formatDetails([item]), "deepseek/deepseek: Balance 9.99 USD");
-  assert.equal(formatCompact([item]), "DeepSeek deepseek  9.99 USD");
+test("createUsageReport renders DeepSeek balances instead of a percentage", () => {
+  const report = createUsageReport([
+    { provider: "deepseek", label: "deepseek", balance: { amount: 9.99, currency: "USD" } },
+  ]);
+  assert.deepEqual(report.sections[0], {
+    title: "DeepSeek · deepseek",
+    rows: [{ label: "Balance", value: "9.99 USD" }],
+  });
+  assert.equal(
+    formatCompact([
+      { provider: "deepseek", label: "deepseek", balance: { amount: 9.99, currency: "USD" } },
+    ]),
+    "DeepSeek deepseek  9.99 USD",
+  );
 });

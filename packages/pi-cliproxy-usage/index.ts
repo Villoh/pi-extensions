@@ -5,12 +5,19 @@ import {
   type ExtensionContext,
   getAgentDir,
 } from "@earendil-works/pi-coding-agent";
+import { Text } from "@earendil-works/pi-tui";
 import { resolveManagementRoot } from "./src/management-client.js";
 import { loadSettings } from "./src/settings.js";
 import { showSettings } from "./src/settings-ui.js";
 import { runLogout, runSetup } from "./src/setup-ui.js";
 import type { AccountUsage, ProviderName, Settings } from "./src/types.js";
-import { clearUsage, formatDetails, renderUsage } from "./src/ui.js";
+import {
+  clearUsage,
+  createUsageReport,
+  type UsageReport,
+  renderReport,
+  renderUsage,
+} from "./src/ui.js";
 import { readProviderAccounts } from "./src/usage.js";
 
 const COMMAND_ARGUMENTS = [
@@ -54,6 +61,19 @@ export default function (pi: ExtensionAPI) {
   let refreshing: Promise<void> | undefined;
   const cache = new Map<ProviderName, { items: AccountUsage[]; fetchedAt: number }>();
 
+  pi.registerEntryRenderer<UsageReport>("cliproxy-usage", (entry, _options, theme) =>
+    entry.data ? new Text(renderReport(entry.data, theme), 1, 0) : undefined,
+  );
+
+  const showReport = (
+    ctx: ExtensionContext,
+    report: UsageReport,
+    level: "info" | "warning" = "info",
+  ) => {
+    if (ctx.mode === "tui") pi.appendEntry("cliproxy-usage", report);
+    else ctx.ui.notify(renderReport(report, ctx.ui.theme), level);
+  };
+
   const refresh = (ctx: ExtensionContext, opts: { notify?: boolean; force?: boolean } = {}) =>
     (refreshing ??= (async () => {
       const loaded = await loadSettings(SETTINGS_PATH, LEGACY_SETTINGS_PATH);
@@ -94,12 +114,12 @@ export default function (pi: ExtensionAPI) {
         allItems.push(...result.items);
       }
       renderUsage(ctx, allItems, loaded.settings.maxVisibleAccounts, loaded.settings.hideEmails);
-      if (opts.notify) {
-        ctx.ui.notify(
-          formatDetails(allItems, loaded.settings.hideEmails),
+      if (opts.notify)
+        showReport(
+          ctx,
+          createUsageReport(allItems, loaded.settings.hideEmails),
           allItems.some((item) => item.error) ? "warning" : "info",
         );
-      }
     })().finally(() => {
       refreshing = undefined;
     }));
@@ -127,24 +147,74 @@ export default function (pi: ExtensionAPI) {
     const cached = provider ? cache.get(provider) : undefined;
     const providers = Object.entries(loaded.settings.providers)
       .filter(([, enabled]) => enabled)
-      .map(([name]) => name)
+      .map(([name]) =>
+        name === "deepseek" ? "DeepSeek" : `${name[0].toUpperCase()}${name.slice(1)}`,
+      )
       .join(", ");
-    ctx.ui.notify(
-      [
-        `Settings: ${loaded.path}`,
-        `Management URL: ${"root" in resolved ? resolved.root : `unresolved (${resolved.error})`}`,
-        ...("root" in resolved ? [`Dashboard (if enabled): ${resolved.root}/management.html`] : []),
-        `Management password: ${loaded.settings.managementKey ? "configured" : "not set"}`,
-        `Selection: ${loaded.settings.selectionMode}`,
-        `Hide emails: ${loaded.settings.hideEmails ? "yes" : "no"}`,
-        `Accounts disabled: ${Object.entries(loaded.settings.accounts).filter(([, enabled]) => !enabled).length}`,
-        `Refresh: ${loaded.settings.refreshMinutes} min`,
-        `Visible accounts: ${loaded.settings.maxVisibleAccounts}`,
-        `Providers: ${providers || "none"}`,
-        `Current model provider: ${provider ?? "unmatched"}`,
-        `Last refresh: ${cached ? new Date(cached.fetchedAt).toLocaleTimeString() : "never"}`,
-        ...loaded.warnings,
-      ].join("\n"),
+    const unavailable = "error" in resolved;
+    showReport(
+      ctx,
+      {
+        title: "CLIProxyAPI Status",
+        sections: [
+          {
+            title: "Connection",
+            rows: [
+              {
+                label: "Management API",
+                value: unavailable ? `Unavailable — ${resolved.error}` : resolved.root,
+                ...(unavailable ? { tone: "warning" as const } : {}),
+              },
+              ...(!unavailable
+                ? [{ label: "Dashboard", value: `${resolved.root}/management.html` }]
+                : []),
+            ],
+          },
+          {
+            title: "Configuration",
+            rows: [
+              {
+                label: "Password",
+                value: loaded.settings.managementKey ? "configured" : "not set",
+              },
+              { label: "Mode", value: loaded.settings.selectionMode },
+              { label: "Providers", value: providers || "none" },
+              {
+                label: "Refresh",
+                value: `every ${loaded.settings.refreshMinutes} min · ${loaded.settings.maxVisibleAccounts} visible`,
+              },
+              {
+                label: "Accounts",
+                value: `${Object.values(loaded.settings.accounts).filter((enabled) => !enabled).length} disabled · emails ${loaded.settings.hideEmails ? "hidden" : "shown"}`,
+              },
+              { label: "Settings file", value: loaded.path },
+            ],
+          },
+          {
+            title: "Cache",
+            rows: [
+              { label: "Model provider", value: provider ?? "unmatched" },
+              {
+                label: "Last refresh",
+                value: cached ? new Date(cached.fetchedAt).toLocaleTimeString() : "never",
+              },
+            ],
+          },
+          ...(loaded.warnings.length
+            ? [
+                {
+                  title: "Warnings",
+                  rows: loaded.warnings.map((value) => ({
+                    label: "Warning",
+                    value,
+                    tone: "warning" as const,
+                  })),
+                },
+              ]
+            : []),
+        ],
+        footer: "/cliproxy-usage settings",
+      },
       loaded.warnings.length ? "warning" : "info",
     );
   };

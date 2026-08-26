@@ -101,7 +101,7 @@ Setup, settings, and status also print the CLIProxyAPI web dashboard URL (`<root
 
 - `/cliproxy-usage help` — show commands and manual settings path
 
-Detailed quota notifications (`/cliproxy-usage refresh`, `/cliproxy-usage`) include the provider reset countdown when the upstream API supplies a reset timestamp. The compact widget intentionally omits reset times.
+Detailed quota views (`/cliproxy-usage refresh`, `/cliproxy-usage`) appear in the transcript with the same titled-section hierarchy as Pi's `/session` view. They include the provider reset countdown when the upstream API supplies a reset timestamp; the compact widget intentionally omits reset times.
 
 If an upstream provider quota request returns 401 or 403, let CLIProxyAPI refresh the account or log in again.
 
