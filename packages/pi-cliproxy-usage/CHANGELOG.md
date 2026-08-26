@@ -1,5 +1,11 @@
 # pi-cliproxy-usage
 
+## 0.4.3
+
+### Patch Changes
+
+- 23d6799: Add `r` to refresh the usage/status report in place without closing it.
+
 ## 0.4.2
 
 ### Patch Changes
