@@ -359,7 +359,7 @@ async function showSkills(
     ? "Skill Configuration"
     : state === "all"
       ? "Skill List"
-      : `${state[0]!.toUpperCase()}${state.slice(1)} Skills`;
+      : `${state.charAt(0).toUpperCase()}${state.slice(1)} Skills`;
 
   await ctx.ui.custom((tui, theme, _keybindings, done) => {
     const items: SettingItem[] = skills.map((skill) => {
@@ -442,8 +442,8 @@ export default function skillsExtension(pi: ExtensionAPI) {
       const value = prefix.trim().toLowerCase();
       const nestedCommand = rawValue.match(/^(list|edit)\s+(.*)$/);
       if (nestedCommand) {
-        const command = nestedCommand[1]!;
-        const state = nestedCommand[2]!.trim();
+        const command = nestedCommand[1] ?? "";
+        const state = nestedCommand[2]?.trim() ?? "";
         return ["enabled", "disabled"]
           .filter((option) => option.startsWith(state))
           .map((option) => ({
@@ -471,12 +471,13 @@ export default function skillsExtension(pi: ExtensionAPI) {
     },
     handler: async (args, ctx) => {
       const tokens = args.trim().split(/\s+/).filter(Boolean);
-      const first = tokens[0]?.toLowerCase();
-      const second = tokens[1]?.toLowerCase();
-      if (!first) {
+      const skillName = tokens[0];
+      if (!skillName) {
         await showSkills(ctx, "all", true);
         return;
       }
+      const first = skillName.toLowerCase();
+      const second = tokens[1]?.toLowerCase();
       if (first === "list" || first === "edit") {
         if (tokens.length > 2 || (second && second !== "enabled" && second !== "disabled")) {
           ctx.ui.notify(USAGE_TEXT, "warning");
@@ -512,10 +513,10 @@ export default function skillsExtension(pi: ExtensionAPI) {
         return;
       }
       if (first && (second === "enable" || second === "disable")) {
-        await setSkillState(ctx, tokens[0]!, second);
+        await setSkillState(ctx, skillName, second);
         return;
       }
-      await invokeSkill(pi, ctx, tokens[0]!, tokens.slice(1).join(" "));
+      await invokeSkill(pi, ctx, skillName, tokens.slice(1).join(" "));
     },
   });
 }

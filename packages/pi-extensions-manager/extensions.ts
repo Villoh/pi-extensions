@@ -280,7 +280,7 @@ async function showExtensions(
     ? "Extension Configuration"
     : state === "all"
       ? "Extension List"
-      : `${state[0]!.toUpperCase()}${state.slice(1)} Extensions`;
+      : `${state.charAt(0).toUpperCase()}${state.slice(1)} Extensions`;
 
   let saveQueue = Promise.resolve();
   let saveError: Error | undefined;
@@ -376,7 +376,7 @@ export default function extensionsExtension(pi: ExtensionAPI) {
       const value = prefix.trim().toLowerCase();
       const nestedList = rawValue.match(/^list\s+(.*)$/);
       if (nestedList) {
-        const state = nestedList[1]!.trim();
+        const state = nestedList[1]?.trim() ?? "";
         return ["enabled", "disabled"]
           .filter((option) => option.startsWith(state))
           .map((option) => ({
