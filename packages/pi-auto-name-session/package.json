@@ -8,7 +8,10 @@
   ],
   "type": "module",
   "license": "MIT",
-  "author": "Agnish Chakraborty",
+  "author": "Villoh",
+  "contributors": [
+    "Agnish Chakraborty (original author, https://github.com/agnishcc/pi-extention-monorepo/tree/main/packages/edb-auto-name-session)"
+  ],
   "publishConfig": {
     "access": "public"
   },

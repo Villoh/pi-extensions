@@ -58,4 +58,4 @@ Configure provider access with `/login` in Pi or the provider's environment vari
 
 ## License
 
-[MIT](LICENSE) © Agnish Chakraborty. See [LICENSE](LICENSE) for the original notice; this fork is redistributed under the same terms.
+[MIT](LICENSE) © Villoh. Forked from [`agnishcc/pi-extention-monorepo`](https://github.com/agnishcc/pi-extention-monorepo/tree/main/packages/edb-auto-name-session) © Agnish Chakraborty; see [LICENSE](LICENSE) for the original notice.
