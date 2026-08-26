@@ -48,10 +48,41 @@ function formatCountdown(resetsAt: Date): string | undefined {
   const ms = resetsAt.getTime() - Date.now();
   if (ms <= 0) return undefined;
   const totalMinutes = Math.round(ms / 60_000);
-  const hours = Math.floor(totalMinutes / 60);
+  const days = Math.floor(totalMinutes / (24 * 60));
+  const hours = Math.floor((totalMinutes % (24 * 60)) / 60);
   const minutes = totalMinutes % 60;
-  const parts = [hours && `${hours}h`, minutes && `${minutes}m`].filter(Boolean);
+  const parts = [days && `${days}d`, hours && `${hours}h`, minutes && `${minutes}m`].filter(
+    Boolean,
+  );
   return `resets in ${parts.length ? parts.join(" ") : "<1m"}`;
+}
+
+export type ReportRow = {
+  label: string;
+  value: string;
+  tone?: "error" | "warning";
+};
+
+export type UsageReport = {
+  title: string;
+  sections: { title: string; rows: ReportRow[] }[];
+  footer?: string;
+};
+
+type ReportTheme = Theme & { bold(text: string): string };
+
+/** Format a report like Pi's built-in /session view: titled sections with dim labels. */
+export function renderReport(report: UsageReport, theme: ReportTheme): string {
+  const sections = report.sections.map((section) => {
+    const rows = section.rows.map(({ label, value, tone }) => {
+      const text = `${theme.fg("dim", `${label}:`)} ${value}`;
+      return tone ? theme.fg(tone, text) : text;
+    });
+    return [theme.bold(section.title), ...rows].join("\n");
+  });
+  return [theme.bold(report.title), ...sections, report.footer && theme.fg("dim", report.footer)]
+    .filter((section): section is string => Boolean(section))
+    .join("\n\n");
 }
 
 export function formatCompact(items: AccountUsage[], hideEmails = false): string {
@@ -71,24 +102,42 @@ export function formatCompact(items: AccountUsage[], hideEmails = false): string
 }
 
 /** Includes reset countdowns; the compact widget intentionally omits them. */
-export function formatDetails(items: AccountUsage[], hideEmails = false): string {
-  if (!items.length) return "No enabled CLIProxyAPI accounts found.";
-  return items
-    .map((item) => {
-      const label = accountLabel(item, hideEmails);
-      if (item.error) return `${item.provider}/${label}: ${item.error}`;
-      if (item.balance) return `${item.provider}/${label}: Balance ${formatBalance(item.balance)}`;
-      const window = (name: string, usage?: UsageWindow) => {
-        if (!usage) return undefined;
-        const countdown = usage.resetsAt && formatCountdown(usage.resetsAt);
-        return `${name} ${usage.used.toFixed(0)}% used${countdown ? ` (${countdown})` : ""}`;
+export function createUsageReport(items: AccountUsage[], hideEmails = false): UsageReport {
+  const sections = items.map((item) => {
+    const label = accountLabel(item, hideEmails);
+    if (item.error)
+      return {
+        title: `${PROVIDER_LABELS[item.provider]} · ${label}`,
+        rows: [{ label: "Error", value: item.error, tone: "error" as const }],
       };
-      const windows = [window("Session", item.session), window("Weekly", item.weekly)].filter(
-        Boolean,
-      );
-      return `${item.provider}/${label}: ${windows.join(" · ") || "No usage window"}`;
-    })
-    .join("\n");
+    if (item.balance)
+      return {
+        title: `${PROVIDER_LABELS[item.provider]} · ${label}`,
+        rows: [{ label: "Balance", value: formatBalance(item.balance) }],
+      };
+    const window = (name: string, usage?: UsageWindow): ReportRow | undefined => {
+      if (!usage) return undefined;
+      const countdown = usage.resetsAt && formatCountdown(usage.resetsAt);
+      return {
+        label: name,
+        value: `${usageBar(usage.used)} ${usage.used.toFixed(0)}%${countdown ? ` · ${countdown}` : ""}`,
+      };
+    };
+    const rows = [window("Session", item.session), window("Weekly", item.weekly)].filter(
+      (value): value is ReportRow => Boolean(value),
+    );
+    return {
+      title: `${PROVIDER_LABELS[item.provider]} · ${label}`,
+      rows: rows.length ? rows : [{ label: "Usage", value: "No usage window" }],
+    };
+  });
+  return {
+    title: "CLIProxyAPI Usage",
+    sections: sections.length
+      ? sections
+      : [{ title: "Accounts", rows: [{ label: "Status", value: "No enabled accounts found." }] }],
+    footer: "/cliproxy-usage refresh · settings",
+  };
 }
 
 function truncateAnsi(text: string, width: number): string {

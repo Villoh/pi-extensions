@@ -5,12 +5,20 @@ import {
   type ExtensionContext,
   getAgentDir,
 } from "@earendil-works/pi-coding-agent";
+import { Container, Key, matchesKey, Text } from "@earendil-works/pi-tui";
 import { resolveManagementRoot } from "./src/management-client.js";
 import { loadSettings } from "./src/settings.js";
 import { showSettings } from "./src/settings-ui.js";
 import { runLogout, runSetup } from "./src/setup-ui.js";
 import type { AccountUsage, ProviderName, Settings } from "./src/types.js";
-import { clearUsage, formatDetails, renderUsage } from "./src/ui.js";
+import {
+  clearUsage,
+  createSettingsBorder,
+  createUsageReport,
+  renderReport,
+  renderUsage,
+  type UsageReport,
+} from "./src/ui.js";
 import { readProviderAccounts } from "./src/usage.js";
 
 const COMMAND_ARGUMENTS = [
@@ -54,6 +62,31 @@ export default function (pi: ExtensionAPI) {
   let refreshing: Promise<void> | undefined;
   const cache = new Map<ProviderName, { items: AccountUsage[]; fetchedAt: number }>();
 
+  const showReport = async (
+    ctx: ExtensionContext,
+    report: UsageReport,
+    level: "info" | "warning" = "info",
+  ) => {
+    if (ctx.mode !== "tui") {
+      ctx.ui.notify(renderReport(report, ctx.ui.theme), level);
+      return;
+    }
+    await ctx.ui.custom<void>((_tui, theme, _keybindings, done) => {
+      const container = new Container();
+      container.addChild(createSettingsBorder(theme));
+      container.addChild(new Text(renderReport(report, theme), 1, 1));
+      container.addChild(new Text(theme.fg("dim", "Enter or Esc to close"), 1, 0));
+      container.addChild(createSettingsBorder(theme));
+      return {
+        render: (width) => container.render(width),
+        invalidate: () => container.invalidate(),
+        handleInput(data: string) {
+          if (matchesKey(data, Key.enter) || matchesKey(data, Key.escape)) done();
+        },
+      };
+    });
+  };
+
   const refresh = (ctx: ExtensionContext, opts: { notify?: boolean; force?: boolean } = {}) =>
     (refreshing ??= (async () => {
       const loaded = await loadSettings(SETTINGS_PATH, LEGACY_SETTINGS_PATH);
@@ -94,12 +127,12 @@ export default function (pi: ExtensionAPI) {
         allItems.push(...result.items);
       }
       renderUsage(ctx, allItems, loaded.settings.maxVisibleAccounts, loaded.settings.hideEmails);
-      if (opts.notify) {
-        ctx.ui.notify(
-          formatDetails(allItems, loaded.settings.hideEmails),
+      if (opts.notify)
+        await showReport(
+          ctx,
+          createUsageReport(allItems, loaded.settings.hideEmails),
           allItems.some((item) => item.error) ? "warning" : "info",
         );
-      }
     })().finally(() => {
       refreshing = undefined;
     }));
@@ -127,24 +160,74 @@ export default function (pi: ExtensionAPI) {
     const cached = provider ? cache.get(provider) : undefined;
     const providers = Object.entries(loaded.settings.providers)
       .filter(([, enabled]) => enabled)
-      .map(([name]) => name)
+      .map(([name]) =>
+        name === "deepseek" ? "DeepSeek" : `${name[0].toUpperCase()}${name.slice(1)}`,
+      )
       .join(", ");
-    ctx.ui.notify(
-      [
-        `Settings: ${loaded.path}`,
-        `Management URL: ${"root" in resolved ? resolved.root : `unresolved (${resolved.error})`}`,
-        ...("root" in resolved ? [`Dashboard (if enabled): ${resolved.root}/management.html`] : []),
-        `Management password: ${loaded.settings.managementKey ? "configured" : "not set"}`,
-        `Selection: ${loaded.settings.selectionMode}`,
-        `Hide emails: ${loaded.settings.hideEmails ? "yes" : "no"}`,
-        `Accounts disabled: ${Object.entries(loaded.settings.accounts).filter(([, enabled]) => !enabled).length}`,
-        `Refresh: ${loaded.settings.refreshMinutes} min`,
-        `Visible accounts: ${loaded.settings.maxVisibleAccounts}`,
-        `Providers: ${providers || "none"}`,
-        `Current model provider: ${provider ?? "unmatched"}`,
-        `Last refresh: ${cached ? new Date(cached.fetchedAt).toLocaleTimeString() : "never"}`,
-        ...loaded.warnings,
-      ].join("\n"),
+    const unavailable = "error" in resolved;
+    await showReport(
+      ctx,
+      {
+        title: "CLIProxyAPI Status",
+        sections: [
+          {
+            title: "Connection",
+            rows: [
+              {
+                label: "Management API",
+                value: unavailable ? `Unavailable — ${resolved.error}` : resolved.root,
+                ...(unavailable ? { tone: "warning" as const } : {}),
+              },
+              ...(!unavailable
+                ? [{ label: "Dashboard", value: `${resolved.root}/management.html` }]
+                : []),
+            ],
+          },
+          {
+            title: "Configuration",
+            rows: [
+              {
+                label: "Password",
+                value: loaded.settings.managementKey ? "configured" : "not set",
+              },
+              { label: "Mode", value: loaded.settings.selectionMode },
+              { label: "Providers", value: providers || "none" },
+              {
+                label: "Refresh",
+                value: `every ${loaded.settings.refreshMinutes} min · ${loaded.settings.maxVisibleAccounts} visible`,
+              },
+              {
+                label: "Accounts",
+                value: `${Object.values(loaded.settings.accounts).filter((enabled) => !enabled).length} disabled · emails ${loaded.settings.hideEmails ? "hidden" : "shown"}`,
+              },
+              { label: "Settings file", value: loaded.path },
+            ],
+          },
+          {
+            title: "Cache",
+            rows: [
+              { label: "Model provider", value: provider ?? "unmatched" },
+              {
+                label: "Last refresh",
+                value: cached ? new Date(cached.fetchedAt).toLocaleTimeString() : "never",
+              },
+            ],
+          },
+          ...(loaded.warnings.length
+            ? [
+                {
+                  title: "Warnings",
+                  rows: loaded.warnings.map((value) => ({
+                    label: "Warning",
+                    value,
+                    tone: "warning" as const,
+                  })),
+                },
+              ]
+            : []),
+        ],
+        footer: "/cliproxy-usage settings",
+      },
       loaded.warnings.length ? "warning" : "info",
     );
   };
@@ -175,7 +258,7 @@ export default function (pi: ExtensionAPI) {
     },
     handler: async (args, ctx) => {
       const action = args.trim().toLowerCase();
-      if (!action) return refresh(ctx, { notify: true, force: true });
+      if (!action) return refresh(ctx, { notify: true });
       if (action === "setup" || action === "login")
         return runSetup(ctx, SETTINGS_PATH, LEGACY_SETTINGS_PATH);
       if (action === "logout") {
