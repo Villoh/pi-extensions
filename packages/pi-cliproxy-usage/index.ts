@@ -71,32 +71,20 @@ export default function (pi: ExtensionAPI) {
       ctx.ui.notify(renderReport(report, ctx.ui.theme), level);
       return;
     }
-    await ctx.ui.custom<void>(
-      (_tui, theme, _keybindings, done) => {
-        const container = new Container();
-        container.addChild(createSettingsBorder(theme));
-        container.addChild(new Text(renderReport(report, theme), 1, 1));
-        container.addChild(new Text(theme.fg("dim", "Enter or Esc to close"), 1, 0));
-        container.addChild(createSettingsBorder(theme));
-        return {
-          render: (width) => container.render(width),
-          invalidate: () => container.invalidate(),
-          handleInput(data: string) {
-            if (matchesKey(data, Key.enter) || matchesKey(data, Key.escape)) done();
-          },
-        };
-      },
-      {
-        overlay: true,
-        overlayOptions: {
-          anchor: "center",
-          width: "70%",
-          minWidth: 48,
-          maxHeight: "80%",
-          margin: 2,
+    await ctx.ui.custom<void>((_tui, theme, _keybindings, done) => {
+      const container = new Container();
+      container.addChild(createSettingsBorder(theme));
+      container.addChild(new Text(renderReport(report, theme), 1, 1));
+      container.addChild(new Text(theme.fg("dim", "Enter or Esc to close"), 1, 0));
+      container.addChild(createSettingsBorder(theme));
+      return {
+        render: (width) => container.render(width),
+        invalidate: () => container.invalidate(),
+        handleInput(data: string) {
+          if (matchesKey(data, Key.enter) || matchesKey(data, Key.escape)) done();
         },
-      },
-    );
+      };
+    });
   };
 
   const refresh = (ctx: ExtensionContext, opts: { notify?: boolean; force?: boolean } = {}) =>
@@ -270,7 +258,7 @@ export default function (pi: ExtensionAPI) {
     },
     handler: async (args, ctx) => {
       const action = args.trim().toLowerCase();
-      if (!action) return refresh(ctx, { notify: true, force: true });
+      if (!action) return refresh(ctx, { notify: true });
       if (action === "setup" || action === "login")
         return runSetup(ctx, SETTINGS_PATH, LEGACY_SETTINGS_PATH);
       if (action === "logout") {

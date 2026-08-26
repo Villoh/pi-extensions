@@ -90,7 +90,8 @@ Older `~/.pi/agent/extensions/pi-cliproxy-usage/config.json` files migrate autom
 
 ## Commands
 
-- `/cliproxy-usage` — refresh and show quota for the current model
+- `/cliproxy-usage` — show cached quota for the current model, or refresh when stale
+- `/cliproxy-usage refresh` — force a quota refresh and display current account usage
 - `/cliproxy-usage setup` — enter, validate, and save the Management API password
 - `/cliproxy-usage login` — alias for setup
 - `/cliproxy-usage logout` — remove the saved Management API password
@@ -101,7 +102,7 @@ Setup, settings, and status also print the CLIProxyAPI web dashboard URL (`<root
 
 - `/cliproxy-usage help` — show commands and manual settings path
 
-Detailed quota views (`/cliproxy-usage refresh`, `/cliproxy-usage`) open as a dismissible overlay above the chat, with the same titled-section hierarchy as Pi's `/session` view. They include the provider reset countdown when the upstream API supplies a reset timestamp; the compact widget intentionally omits reset times.
+Detailed quota views (`/cliproxy-usage refresh`, `/cliproxy-usage`) open in a dismissible TUI dialog, with the same titled-section hierarchy as Pi's `/session` view. They include the provider reset countdown when the upstream API supplies a reset timestamp; the compact widget intentionally omits reset times.
 
 If an upstream provider quota request returns 401 or 403, let CLIProxyAPI refresh the account or log in again.
 
