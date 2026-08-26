@@ -234,13 +234,23 @@ test("createUsageReport follows /session's titled-section hierarchy", () => {
 });
 
 test("createUsageReport includes reset countdowns and masks labels", () => {
-  const resetsAt = new Date(Date.now() + 2 * 60 * 60_000 + 15 * 60_000);
+  const now = Date.now();
+  const sessionResetsAt = new Date(now + 2 * 60 * 60_000 + 15 * 60_000);
+  const weeklyResetsAt = new Date(now + 5 * 24 * 60 * 60_000 + 14 * 60 * 60_000 + 50 * 60_000);
   const report = createUsageReport(
-    [{ provider: "claude", label: "john@example.com", session: { used: 50, resetsAt } }],
+    [
+      {
+        provider: "claude",
+        label: "john@example.com",
+        session: { used: 50, resetsAt: sessionResetsAt },
+        weekly: { used: 25, resetsAt: weeklyResetsAt },
+      },
+    ],
     true,
   );
   assert.equal(report.sections[0]?.title, "Claude · j***@***.com");
   assert.match(report.sections[0]?.rows[0]?.value ?? "", /50% · resets in 2h 15m/);
+  assert.match(report.sections[0]?.rows[1]?.value ?? "", /25% · resets in 5d 14h 50m/);
   assert.match(
     formatCompact([{ provider: "claude", label: "john@example.com", session: { used: 10 } }], true),
     /Claude j\*\*\*@\*\*\*\.com/,

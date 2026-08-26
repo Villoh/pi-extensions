@@ -48,9 +48,10 @@ function formatCountdown(resetsAt: Date): string | undefined {
   const ms = resetsAt.getTime() - Date.now();
   if (ms <= 0) return undefined;
   const totalMinutes = Math.round(ms / 60_000);
-  const hours = Math.floor(totalMinutes / 60);
+  const days = Math.floor(totalMinutes / (24 * 60));
+  const hours = Math.floor((totalMinutes % (24 * 60)) / 60);
   const minutes = totalMinutes % 60;
-  const parts = [hours && `${hours}h`, minutes && `${minutes}m`].filter(Boolean);
+  const parts = [days && `${days}d`, hours && `${hours}h`, minutes && `${minutes}m`].filter(Boolean);
   return `resets in ${parts.length ? parts.join(" ") : "<1m"}`;
 }
 
