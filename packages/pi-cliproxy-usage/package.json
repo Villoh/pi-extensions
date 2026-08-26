@@ -1,6 +1,6 @@
 {
   "name": "pi-cliproxy-usage",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Compact CLIProxyAPI account usage meters for Pi Coding Agent",
   "type": "module",
   "keywords": [
