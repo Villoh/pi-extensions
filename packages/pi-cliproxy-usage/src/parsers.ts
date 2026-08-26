@@ -67,3 +67,12 @@ export function parseGrok(body: unknown): Pick<AccountUsage, "weekly"> {
     },
   };
 }
+
+export function parseDeepSeek(body: unknown): Pick<AccountUsage, "balance"> {
+  const infos = (body as Record<string, unknown>)?.balance_infos as unknown[] | undefined;
+  const info = infos?.[0] as Record<string, unknown> | undefined;
+  const amount = toNumber(info?.total_balance);
+  if (amount === undefined) return {};
+  const currency = typeof info?.currency === "string" ? info.currency : "USD";
+  return { balance: { amount, currency } };
+}

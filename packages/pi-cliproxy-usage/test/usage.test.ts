@@ -1,132 +1,172 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import test from "node:test";
-import type { Config } from "../src/types.js";
-import { discoverAccounts, readAccounts } from "../src/usage.js";
+import type { Settings } from "../src/types.js";
+import { readProviderAccounts } from "../src/usage.js";
 
-const config = (accountsDir: string): Config => ({
-  accountsDir,
+const settings = (overrides: Partial<Settings> = {}): Settings => ({
+  managementUrl: "http://host",
+  managementKey: "secret",
   refreshMinutes: 5,
   maxVisibleAccounts: 4,
-  providers: { claude: true, codex: true, grok: true },
-  accounts: {},
-  hideEmails: false,
+  providers: { claude: true, codex: true, grok: true, deepseek: true },
+  ...overrides,
+  selectionMode: overrides.selectionMode ?? "auto",
+  accounts: overrides.accounts ?? {},
+  hideEmails: overrides.hideEmails ?? false,
 });
 
-test("readAccounts returns empty for missing directory", async () => {
-  assert.deepEqual(await readAccounts(config(join(tmpdir(), "missing-cliproxy-dir"))), []);
-});
+function withFetch<T>(
+  handler: (url: string, init?: RequestInit) => Promise<Response> | Response,
+  run: () => Promise<T>,
+) {
+  const original = globalThis.fetch;
+  globalThis.fetch = ((url: string, init?: RequestInit) => handler(url, init)) as typeof fetch;
+  return run().finally(() => {
+    globalThis.fetch = original;
+  });
+}
 
-test("readAccounts skips malformed, unknown, disabled, and disabled-provider files", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "pi-cliproxy-usage-"));
-  try {
-    await Promise.all([
-      writeFile(join(dir, "broken.json"), "{"),
-      writeFile(join(dir, "unknown.json"), JSON.stringify({ type: "gemini", access_token: "x" })),
-      writeFile(
-        join(dir, "disabled.json"),
-        JSON.stringify({ type: "claude", access_token: "x", disabled: true }),
+test("readProviderAccounts skips disabled providers without a network request", async () => {
+  const result = await withFetch(
+    () => {
+      throw new Error("should not fetch");
+    },
+    () =>
+      readProviderAccounts(
+        settings({ providers: { claude: false, codex: true, grok: true, deepseek: true } }),
+        "claude",
       ),
-      writeFile(join(dir, "ignored.txt"), JSON.stringify({ type: "claude", access_token: "x" })),
-    ]);
-    const value = config(dir);
-    value.providers.claude = false;
-    await writeFile(
-      join(dir, "provider-off.json"),
-      JSON.stringify({ type: "claude", access_token: "x" }),
-    );
-    assert.deepEqual(await readAccounts(value), []);
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
+  );
+  assert.deepEqual(result, { items: [] });
 });
 
-test("readAccounts reports missing token without making a request", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "pi-cliproxy-usage-"));
-  try {
-    await writeFile(
-      join(dir, "xai-local.json"),
-      JSON.stringify({ type: "xai", email: "me@example.com" }),
-    );
-    assert.deepEqual(await readAccounts(config(dir)), [
+test("readProviderAccounts errors when no management password is configured", async () => {
+  const result = await readProviderAccounts(settings({ managementKey: undefined }), "claude");
+  assert.deepEqual(result, {
+    error: "Management password not configured. Run /cliproxy-usage setup.",
+  });
+});
+
+test("readProviderAccounts fetches quota for each account of the requested provider only", async () => {
+  const result = await withFetch(
+    (url, init) => {
+      if (url.endsWith("/v0/management/auth-files")) {
+        return new Response(
+          JSON.stringify({
+            files: [
+              { auth_index: "a1", provider: "claude", email: "me@example.com" },
+              { auth_index: "a2", provider: "codex", email: "other@example.com" },
+            ],
+          }),
+        );
+      }
+      if (url.endsWith("/v0/management/api-call")) {
+        const payload = JSON.parse(String(init?.body));
+        assert.equal(payload.auth_index, "a1");
+        assert.equal(payload.url, "https://api.anthropic.com/api/oauth/usage");
+        return new Response(
+          JSON.stringify({
+            status_code: 200,
+            body: JSON.stringify({ five_hour: { utilization: 30 } }),
+          }),
+        );
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    },
+    () => readProviderAccounts(settings(), "claude"),
+  );
+  assert.deepEqual(result, {
+    items: [
       {
-        provider: "grok",
+        id: "a1",
+        provider: "claude",
         label: "me@example.com",
-        error: "missing access_token",
+        session: { used: 30, resetsAt: undefined },
+        weekly: undefined,
       },
-    ]);
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
+    ],
+  });
 });
 
-test("readAccounts skips accounts disabled individually via config.accounts", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "pi-cliproxy-usage-"));
-  try {
-    await writeFile(
-      join(dir, "xai-local.json"),
-      JSON.stringify({ type: "xai", email: "me@example.com" }),
-    );
-    const value = config(dir);
-    value.accounts["xai-local.json"] = false;
-    assert.deepEqual(await readAccounts(value), []);
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("discoverAccounts lists available accounts regardless of enabled state", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "pi-cliproxy-usage-"));
-  try {
-    await Promise.all([
-      writeFile(
-        join(dir, "xai-local.json"),
-        JSON.stringify({ type: "xai", email: "me@example.com" }),
+test("readProviderAccounts filters disabled auth indexes in manual selection mode", async () => {
+  const result = await withFetch(
+    (url, init) => {
+      if (url.endsWith("/v0/management/auth-files")) {
+        return new Response(
+          JSON.stringify({
+            files: [
+              { auth_index: "keep", provider: "xai", email: "keep@example.com" },
+              { auth_index: "skip", provider: "xai", email: "skip@example.com" },
+            ],
+          }),
+        );
+      }
+      const payload = JSON.parse(String(init?.body));
+      assert.equal(payload.auth_index, "keep");
+      return new Response(JSON.stringify({ status_code: 200, body: JSON.stringify({}) }));
+    },
+    () =>
+      readProviderAccounts(
+        settings({ selectionMode: "manual", accounts: { keep: true, skip: false } }),
+        "grok",
       ),
-      writeFile(join(dir, "broken.json"), "{"),
-      writeFile(
-        join(dir, "disabled.json"),
-        JSON.stringify({ type: "claude", access_token: "x", disabled: true }),
-      ),
-    ]);
-    assert.deepEqual(await discoverAccounts({ accountsDir: dir, hideEmails: false }), [
-      { id: "xai-local.json", label: "me@example.com", provider: "grok" },
-    ]);
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
+  );
+  assert.deepEqual(result, {
+    items: [{ id: "keep", provider: "grok", label: "keep@example.com" }],
+  });
 });
 
-test("discoverAccounts masks emails when hideEmails is enabled", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "pi-cliproxy-usage-"));
-  try {
-    await writeFile(
-      join(dir, "xai-local.json"),
-      JSON.stringify({ type: "xai", email: "me@example.com" }),
-    );
-    assert.deepEqual(await discoverAccounts({ accountsDir: dir, hideEmails: true }), [
-      { id: "xai-local.json", label: "m***@***.com", provider: "grok" },
-    ]);
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
+test("readProviderAccounts reports a per-account error instead of failing the whole batch", async () => {
+  const result = await withFetch(
+    (url) => {
+      if (url.endsWith("/v0/management/auth-files")) {
+        return new Response(JSON.stringify({ files: [{ auth_index: "a1", provider: "xai" }] }));
+      }
+      return new Response(JSON.stringify({ status_code: 401, body: "{}" }));
+    },
+    () => readProviderAccounts(settings(), "grok"),
+  );
+  assert.deepEqual(result, {
+    items: [{ id: "a1", provider: "grok", label: "a1", error: "HTTP 401" }],
+  });
 });
 
-test("readAccounts masks the reported label's email when hideEmails is enabled", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "pi-cliproxy-usage-"));
-  try {
-    await writeFile(
-      join(dir, "xai-local.json"),
-      JSON.stringify({ type: "xai", email: "me@example.com" }),
-    );
-    const value = config(dir);
-    value.hideEmails = true;
-    assert.deepEqual(await readAccounts(value), [
-      { provider: "grok", label: "m***@***.com", error: "missing access_token" },
-    ]);
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
+test("readProviderAccounts discovers DeepSeek accounts through openai-compatibility and never leaks the api key", async () => {
+  const result = await withFetch(
+    (url, init) => {
+      if (url.endsWith("/v0/management/openai-compatibility")) {
+        return new Response(
+          JSON.stringify([
+            {
+              name: "deepseek",
+              "base-url": "https://api.deepseek.com/v1",
+              "api-key-entries": [{ "api-key": "sk-secret", "auth-index": "d1" }],
+            },
+          ]),
+        );
+      }
+      if (url.endsWith("/v0/management/api-call")) {
+        const payload = JSON.parse(String(init?.body));
+        assert.equal(payload.url, "https://api.deepseek.com/user/balance");
+        return new Response(
+          JSON.stringify({
+            status_code: 200,
+            body: JSON.stringify({ balance_infos: [{ total_balance: "12.50", currency: "USD" }] }),
+          }),
+        );
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    },
+    () => readProviderAccounts(settings(), "deepseek"),
+  );
+  assert.deepEqual(result, {
+    items: [
+      {
+        id: "d1",
+        provider: "deepseek",
+        label: "deepseek",
+        balance: { amount: 12.5, currency: "USD" },
+      },
+    ],
+  });
 });

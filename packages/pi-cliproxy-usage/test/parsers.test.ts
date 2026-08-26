@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { parseClaude, parseCodex, parseGrok, toNumber } from "../src/parsers.js";
+import { parseClaude, parseCodex, parseDeepSeek, parseGrok, toNumber } from "../src/parsers.js";
 
 test("toNumber accepts finite numbers and numeric strings", () => {
   assert.equal(toNumber(12.5), 12.5);
@@ -91,4 +91,12 @@ test("Grok only exposes weekly unified billing", () => {
     }).weekly?.used,
     0,
   );
+});
+
+test("DeepSeek parses the first balance entry's total balance", () => {
+  assert.deepEqual(parseDeepSeek({ balance_infos: [{ total_balance: "9.99", currency: "USD" }] }), {
+    balance: { amount: 9.99, currency: "USD" },
+  });
+  assert.deepEqual(parseDeepSeek({ balance_infos: [] }), {});
+  assert.deepEqual(parseDeepSeek({}), {});
 });
