@@ -1,6 +1,6 @@
 {
   "name": "@villoh/pi-tools",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Interactive /tools selector to enable/disable tools per session, persisted across reloads.",
   "type": "module",
   "license": "MIT",
