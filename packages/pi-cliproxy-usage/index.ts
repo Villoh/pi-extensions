@@ -10,7 +10,7 @@ import { resolveManagementRoot } from "./src/management-client.js";
 import { loadSettings } from "./src/settings.js";
 import { showSettings } from "./src/settings-ui.js";
 import { runLogout, runSetup } from "./src/setup-ui.js";
-import type { AccountUsage, ProviderName, Settings } from "./src/types.js";
+import type { AccountUsage, ProviderName, Settings, Theme } from "./src/types.js";
 import {
   clearUsage,
   createSettingsBorder,
@@ -66,76 +66,111 @@ export default function (pi: ExtensionAPI) {
     ctx: ExtensionContext,
     report: UsageReport,
     level: "info" | "warning" = "info",
+    onRefresh?: () => Promise<UsageReport>,
   ) => {
     if (ctx.mode !== "tui") {
       ctx.ui.notify(renderReport(report, ctx.ui.theme), level);
       return;
     }
-    await ctx.ui.custom<void>((_tui, theme, _keybindings, done) => {
+    const hintText = (theme: Theme) =>
+      theme.fg("dim", onRefresh ? "Enter or Esc to close · r to refresh" : "Enter or Esc to close");
+    await ctx.ui.custom<void>((tui, theme, _keybindings, done) => {
       const container = new Container();
       container.addChild(createSettingsBorder(theme));
-      container.addChild(new Text(renderReport(report, theme), 1, 1));
-      container.addChild(new Text(theme.fg("dim", "Enter or Esc to close"), 1, 0));
+      const body = new Text(renderReport(report, theme), 1, 1);
+      container.addChild(body);
+      const hint = new Text(hintText(theme), 1, 0);
+      container.addChild(hint);
       container.addChild(createSettingsBorder(theme));
+      let refreshingReport = false;
       return {
         render: (width) => container.render(width),
         invalidate: () => container.invalidate(),
         handleInput(data: string) {
-          if (matchesKey(data, Key.enter) || matchesKey(data, Key.escape)) done();
+          if (matchesKey(data, Key.enter) || matchesKey(data, Key.escape)) return done();
+          if (onRefresh && !refreshingReport && data.toLowerCase() === "r") {
+            refreshingReport = true;
+            hint.setText(theme.fg("dim", "Refreshing…"));
+            tui.requestRender();
+            onRefresh()
+              .then((next) => {
+                body.setText(renderReport(next, theme));
+                hint.setText(hintText(theme));
+              })
+              .catch((error) => hint.setText(theme.fg("error", `Refresh failed: ${error.message}`)))
+              .finally(() => {
+                refreshingReport = false;
+                tui.requestRender();
+              });
+          }
         },
       };
     });
   };
 
-  const refresh = (ctx: ExtensionContext, opts: { notify?: boolean; force?: boolean } = {}) =>
-    (refreshing ??= (async () => {
-      const loaded = await loadSettings(SETTINGS_PATH, LEGACY_SETTINGS_PATH);
-      if (loaded.warnings.length && ctx.hasUI) ctx.ui.notify(loaded.warnings.join("; "), "warning");
+  const fetchUsage = async (
+    ctx: ExtensionContext,
+    opts: { notify?: boolean; force?: boolean } = {},
+  ): Promise<{ items: AccountUsage[]; hideEmails: boolean } | undefined> => {
+    const loaded = await loadSettings(SETTINGS_PATH, LEGACY_SETTINGS_PATH);
+    if (loaded.warnings.length && ctx.hasUI) ctx.ui.notify(loaded.warnings.join("; "), "warning");
 
-      const activeProvider = guessProviderName(ctx.model);
-      const providers =
-        loaded.settings.selectionMode === "manual"
-          ? (Object.keys(loaded.settings.providers) as ProviderName[]).filter(
-              (name) => loaded.settings.providers[name],
-            )
-          : activeProvider
-            ? [activeProvider]
-            : [];
-      if (!providers.length) {
+    const activeProvider = guessProviderName(ctx.model);
+    const providers =
+      loaded.settings.selectionMode === "manual"
+        ? (Object.keys(loaded.settings.providers) as ProviderName[]).filter(
+            (name) => loaded.settings.providers[name],
+          )
+        : activeProvider
+          ? [activeProvider]
+          : [];
+    if (!providers.length) {
+      clearUsage(ctx);
+      if (opts.notify && loaded.settings.selectionMode === "auto")
+        ctx.ui.notify("No CLIProxyAPI provider matches the current model.", "warning");
+      return undefined;
+    }
+
+    const allItems: AccountUsage[] = [];
+    for (const provider of providers) {
+      const cached = cache.get(provider);
+      const isFresh =
+        cached && Date.now() - cached.fetchedAt < loaded.settings.refreshMinutes * 60_000;
+      if (isFresh && !opts.force) {
+        allItems.push(...cached.items);
+        continue;
+      }
+      const result = await readProviderAccounts(loaded.settings, provider);
+      if ("error" in result) {
         clearUsage(ctx);
-        if (opts.notify && loaded.settings.selectionMode === "auto")
-          ctx.ui.notify("No CLIProxyAPI provider matches the current model.", "warning");
-        return;
+        if (opts.notify) ctx.ui.notify(result.error, "warning");
+        return undefined;
       }
+      cache.set(provider, { items: result.items, fetchedAt: Date.now() });
+      allItems.push(...result.items);
+    }
+    renderUsage(ctx, allItems, loaded.settings.maxVisibleAccounts, loaded.settings.hideEmails);
+    return { items: allItems, hideEmails: loaded.settings.hideEmails };
+  };
 
-      const allItems: AccountUsage[] = [];
-      for (const provider of providers) {
-        const cached = cache.get(provider);
-        const isFresh =
-          cached && Date.now() - cached.fetchedAt < loaded.settings.refreshMinutes * 60_000;
-        if (isFresh && !opts.force) {
-          allItems.push(...cached.items);
-          continue;
-        }
-        const result = await readProviderAccounts(loaded.settings, provider);
-        if ("error" in result) {
-          clearUsage(ctx);
-          if (opts.notify) ctx.ui.notify(result.error, "warning");
-          return;
-        }
-        cache.set(provider, { items: result.items, fetchedAt: Date.now() });
-        allItems.push(...result.items);
-      }
-      renderUsage(ctx, allItems, loaded.settings.maxVisibleAccounts, loaded.settings.hideEmails);
-      if (opts.notify)
-        await showReport(
-          ctx,
-          createUsageReport(allItems, loaded.settings.hideEmails),
-          allItems.some((item) => item.error) ? "warning" : "info",
-        );
-    })().finally(() => {
-      refreshing = undefined;
-    }));
+  const refresh = (ctx: ExtensionContext, opts: { notify?: boolean; force?: boolean } = {}) =>
+    (refreshing ??= fetchUsage(ctx, opts)
+      .then(async (result) => {
+        if (opts.notify && result)
+          await showReport(
+            ctx,
+            createUsageReport(result.items, result.hideEmails),
+            result.items.some((item) => item.error) ? "warning" : "info",
+            async () => {
+              const refreshed = await fetchUsage(ctx, { force: true });
+              if (!refreshed) throw new Error("No CLIProxyAPI provider matches the current model.");
+              return createUsageReport(refreshed.items, refreshed.hideEmails);
+            },
+          );
+      })
+      .finally(() => {
+        refreshing = undefined;
+      }));
 
   const scheduleRefresh = (ctx: ExtensionContext, minutes: number) => {
     if (timer) clearInterval(timer);
