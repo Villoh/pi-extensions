@@ -1,5 +1,11 @@
 # @villoh/pi-extensions-manager
 
+## 0.0.3
+
+### Patch Changes
+
+- 1d978aa: Add missing `repository` field, required for npm to verify the sigstore provenance bundle on publish.
+
 ## 0.0.2
 
 ### Patch Changes

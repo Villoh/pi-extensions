@@ -1,6 +1,6 @@
 {
   "name": "@villoh/pi-extensions-manager",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "Pi Extensions Manager: interactive extension enable/disable selector for Pi.",
   "type": "module",
   "license": "MIT",
