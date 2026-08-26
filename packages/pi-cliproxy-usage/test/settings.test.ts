@@ -23,33 +23,44 @@ test("loadSettings uses defaults when file is missing", async () => {
 
 test("normalizeSettings validates values and preserves raw fields", () => {
   const loaded = normalizeSettings({
-    accountsDir: 1,
+    managementUrl: 1,
+    managementKey: "",
     refreshMinutes: 10,
     maxVisibleAccounts: 0,
     providers: { claude: false, codex: "yes", future: true },
-    accounts: { "claude-user.json": false, "codex-user.json": "yes" },
-    hideEmails: "yes",
     future: { enabled: true },
   });
-  assert.equal(loaded.settings.accountsDir, DEFAULT_SETTINGS.accountsDir);
+  assert.equal(loaded.settings.managementUrl, DEFAULT_SETTINGS.managementUrl);
+  assert.equal(loaded.settings.managementKey, undefined);
   assert.equal(loaded.settings.refreshMinutes, 10);
   assert.equal(loaded.settings.maxVisibleAccounts, DEFAULT_SETTINGS.maxVisibleAccounts);
   assert.equal(loaded.settings.providers.claude, false);
-  assert.deepEqual(loaded.settings.accounts, { "claude-user.json": false });
-  assert.equal(loaded.settings.hideEmails, DEFAULT_SETTINGS.hideEmails);
   assert.deepEqual(loaded.raw.future, { enabled: true });
   assert.deepEqual(loaded.warnings, [
-    "ignored invalid accountsDir",
+    "ignored invalid managementUrl",
     "ignored invalid maxVisibleAccounts",
-    "ignored invalid hideEmails",
     "ignored invalid providers.codex",
-    "ignored invalid accounts.codex-user.json",
   ]);
 });
 
-test("normalizeSettings accepts hideEmails", () => {
-  const loaded = normalizeSettings({ hideEmails: true });
+test("normalizeSettings accepts manual selection, account toggles, and email masking", () => {
+  const loaded = normalizeSettings({
+    selectionMode: "manual",
+    accounts: { a1: false, a2: true },
+    hideEmails: true,
+  });
+  assert.equal(loaded.settings.selectionMode, "manual");
+  assert.deepEqual(loaded.settings.accounts, { a1: false, a2: true });
   assert.equal(loaded.settings.hideEmails, true);
+});
+
+test("normalizeSettings accepts managementUrl and managementKey", () => {
+  const loaded = normalizeSettings({
+    managementUrl: "http://127.0.0.1:8317/v1",
+    managementKey: "secret",
+  });
+  assert.equal(loaded.settings.managementUrl, "http://127.0.0.1:8317/v1");
+  assert.equal(loaded.settings.managementKey, "secret");
 });
 
 test("loadSettings blocks writes for malformed JSON", async () => {
@@ -65,20 +76,45 @@ test("loadSettings blocks writes for malformed JSON", async () => {
   }
 });
 
-test("saveSettings preserves unknown fields", async () => {
+test("saveSettings preserves unknown fields and account selection settings", async () => {
   const dir = await mkdtemp(join(tmpdir(), "pi-cliproxy-settings-"));
   try {
     const path = join(dir, "settings.json");
     await saveSettings(
-      { ...DEFAULT_SETTINGS, refreshMinutes: 15, accounts: { "claude-user.json": false } },
-      { future: true, providers: { future: false }, accounts: { "old.json": true } },
+      { ...DEFAULT_SETTINGS, refreshMinutes: 15 },
+      {
+        future: true,
+        providers: { future: false },
+        accountsDir: "~/.cli-proxy-api",
+        accounts: { a: true },
+        hideEmails: true,
+      },
       path,
     );
     const saved = JSON.parse(await readFile(path, "utf8"));
     assert.equal(saved.future, true);
     assert.equal(saved.providers.future, false);
     assert.equal(saved.refreshMinutes, 15);
-    assert.deepEqual(saved.accounts, { "old.json": true, "claude-user.json": false });
+    assert.equal(saved.accountsDir, undefined);
+    assert.deepEqual(saved.accounts, {});
+    assert.equal(saved.hideEmails, false);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("saveSettings removes managementKey when set to undefined (logout)", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-cliproxy-settings-"));
+  try {
+    const path = join(dir, "settings.json");
+    await saveSettings({ ...DEFAULT_SETTINGS, managementKey: "secret" }, {}, path);
+    await saveSettings(
+      { ...DEFAULT_SETTINGS, managementKey: undefined },
+      { managementKey: "secret" },
+      path,
+    );
+    const saved = JSON.parse(await readFile(path, "utf8"));
+    assert.equal(saved.managementKey, undefined);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

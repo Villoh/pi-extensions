@@ -1,108 +1,12 @@
-import { readdir, readFile } from "node:fs/promises";
-import { homedir } from "node:os";
-import { basename, join, resolve } from "node:path";
-import { parseClaude, parseCodex, parseGrok, toNumber } from "./parsers.js";
-import type { AccountSummary, AccountUsage, Config, ProviderName } from "./types.js";
-
-type AuthFile = {
-  type?: string;
-  email?: string;
-  access_token?: string;
-  account_id?: string;
-  disabled?: boolean;
-};
-
-const PROVIDERS = new Set<ProviderName>(["claude", "codex", "grok"]);
-const USAGE_URLS = {
-  claude: "https://api.anthropic.com/api/oauth/usage",
-  codex: "https://chatgpt.com/backend-api/wham/usage",
-  grok: "https://cli-chat-proxy.grok.com/v1/billing?format=credits",
-} as const;
-
-function expandHome(path: string): string {
-  if (path === "~") return homedir();
-  if (path.startsWith("~/") || path.startsWith("~\\")) {
-    return join(homedir(), path.slice(2));
-  }
-  return resolve(path);
-}
-
-function providerName(type?: string): ProviderName | undefined {
-  const provider = type === "xai" ? "grok" : type;
-  return PROVIDERS.has(provider as ProviderName) ? (provider as ProviderName) : undefined;
-}
-
-async function request(
-  url: string,
-  token: string,
-  headers: Record<string, string> = {},
-): Promise<{ body: unknown; headers: Headers }> {
-  const response = await fetch(url, {
-    headers: {
-      Authorization: `Bearer ${token}`,
-      Accept: "application/json",
-      "User-Agent": "pi-cliproxy-usage",
-      ...headers,
-    },
-    signal: AbortSignal.timeout(10_000),
-  });
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
-  return { body: await response.json(), headers: response.headers };
-}
-
-async function fetchUsage(
-  provider: ProviderName,
-  auth: AuthFile,
-  file: string,
-  hideEmails: boolean,
-): Promise<AccountUsage> {
-  const label = accountLabel(auth, file, hideEmails);
-  try {
-    if (!auth.access_token) throw new Error("missing access_token");
-    if (provider === "claude") {
-      const { body } = await request(USAGE_URLS.claude, auth.access_token, {
-        "anthropic-beta": "oauth-2025-04-20",
-        "Content-Type": "application/json",
-      });
-      return { provider, label, ...parseClaude(body) };
-    }
-    if (provider === "codex") {
-      const headers: Record<string, string> = {};
-      if (auth.account_id) headers["ChatGPT-Account-Id"] = auth.account_id;
-      const response = await request(USAGE_URLS.codex, auth.access_token, headers);
-      const parsed = parseCodex(response.body);
-      if (!parsed.session) {
-        const used = toNumber(response.headers.get("x-codex-primary-used-percent"));
-        if (used !== undefined) parsed.session = { used };
-      }
-      return { provider, label, ...parsed };
-    }
-    const { body } = await request(USAGE_URLS.grok, auth.access_token, {
-      "X-XAI-Token-Auth": "xai-grok-cli",
-    });
-    return { provider, label, ...parseGrok(body) };
-  } catch (error) {
-    return {
-      provider,
-      label,
-      error: error instanceof Error ? error.message : String(error),
-    };
-  }
-}
-
-async function loadAuth(
-  dir: string,
-  name: string,
-): Promise<{ auth: AuthFile; provider: ProviderName } | undefined> {
-  try {
-    const auth = JSON.parse(await readFile(join(dir, name), "utf8")) as AuthFile;
-    const provider = providerName(auth.type);
-    if (!provider || auth.disabled) return undefined;
-    return { auth, provider };
-  } catch {
-    return undefined;
-  }
-}
+import {
+  type AuthFileEntry,
+  apiCall,
+  listAuthFiles,
+  listDeepSeekAccounts,
+  resolveManagementRoot,
+} from "./management-client.js";
+import { parseClaude, parseCodex, parseDeepSeek, parseGrok } from "./parsers.js";
+import type { AccountSummary, AccountUsage, ProviderName, Settings } from "./types.js";
 
 function maskPart(part: string): string {
   return part ? `${part[0]}${"*".repeat(Math.max(part.length - 1, 3))}` : part;
@@ -113,58 +17,153 @@ function maskEmail(email: string): string {
   if (at <= 0) return email;
   const domain = email.slice(at + 1);
   const dot = domain.lastIndexOf(".");
-  const tld = dot > 0 ? domain.slice(dot) : "";
-  return `${maskPart(email.slice(0, at))}@***${tld}`;
+  return `${maskPart(email.slice(0, at))}@***${dot > 0 ? domain.slice(dot) : ""}`;
 }
 
-function accountLabel(auth: AuthFile, name: string, hideEmails: boolean): string {
-  const label = auth.email || basename(name, ".json").replace(/^(claude|codex|xai)-/, "");
-  return hideEmails && auth.email ? maskEmail(label) : label;
+function displayLabel(label: string, hideEmails: boolean): string {
+  return hideEmails && label.includes("@") ? maskEmail(label) : label;
 }
 
-async function readAccount(
-  dir: string,
-  name: string,
-  config: Config,
-): Promise<AccountUsage | undefined> {
-  const loaded = await loadAuth(dir, name);
-  if (!loaded) return undefined;
-  const { auth, provider } = loaded;
-  if (!config.providers[provider] || config.accounts[name] === false) return undefined;
-  return fetchUsage(provider, auth, join(dir, name), config.hideEmails);
-}
+const PROVIDER_REQUEST: Record<
+  ProviderName,
+  { url: string; header(entry: AuthFileEntry): Record<string, string> }
+> = {
+  claude: {
+    url: "https://api.anthropic.com/api/oauth/usage",
+    header: () => ({
+      Authorization: "Bearer $TOKEN$",
+      "anthropic-beta": "oauth-2025-04-20",
+      "Content-Type": "application/json",
+    }),
+  },
+  codex: {
+    url: "https://chatgpt.com/backend-api/wham/usage",
+    header: (entry) => ({
+      Authorization: "Bearer $TOKEN$",
+      "User-Agent": "pi-cliproxy-usage",
+      ...(entry.chatgptAccountId ? { "ChatGPT-Account-Id": entry.chatgptAccountId } : {}),
+    }),
+  },
+  grok: {
+    url: "https://cli-chat-proxy.grok.com/v1/billing?format=credits",
+    header: () => ({ Authorization: "Bearer $TOKEN$", "X-XAI-Token-Auth": "xai-grok-cli" }),
+  },
+  deepseek: {
+    url: "https://api.deepseek.com/user/balance",
+    header: () => ({ Authorization: "Bearer $TOKEN$" }),
+  },
+};
 
-export async function readAccounts(config: Config): Promise<AccountUsage[]> {
-  const dir = expandHome(config.accountsDir);
+const PARSE: Record<ProviderName, (body: unknown) => Partial<AccountUsage>> = {
+  claude: parseClaude,
+  codex: parseCodex,
+  grok: parseGrok,
+  deepseek: parseDeepSeek,
+};
+
+async function fetchOne(
+  root: string,
+  key: string,
+  provider: ProviderName,
+  entry: AuthFileEntry,
+  hideEmails: boolean,
+): Promise<AccountUsage> {
+  const request = PROVIDER_REQUEST[provider];
   try {
-    const names = (await readdir(dir)).filter((name) => name.toLowerCase().endsWith(".json"));
-    const accounts = await Promise.all(names.map((name) => readAccount(dir, name, config)));
-    return accounts.filter(Boolean) as AccountUsage[];
+    const result = await apiCall(root, key, {
+      authIndex: entry.authIndex,
+      method: "GET",
+      url: request.url,
+      header: request.header(entry),
+    });
+    if (result.statusCode < 200 || result.statusCode >= 300) {
+      throw new Error(`HTTP ${result.statusCode}`);
+    }
+    return {
+      id: entry.authIndex,
+      provider,
+      label: displayLabel(entry.label, hideEmails),
+      ...PARSE[provider](JSON.parse(result.body)),
+    };
+  } catch (error) {
+    return {
+      id: entry.authIndex,
+      provider,
+      label: displayLabel(entry.label, hideEmails),
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+export type ReadResult = { items: AccountUsage[] } | { error: string };
+
+export async function discoverAccounts(settings: Settings): Promise<AccountSummary[]> {
+  if (!settings.managementKey) return [];
+  const resolved = await resolveManagementRoot(settings);
+  if ("error" in resolved) return [];
+  try {
+    const grouped = await listAuthFiles(resolved.root, settings.managementKey);
+    const accounts: AccountSummary[] = [];
+    for (const provider of ["claude", "codex", "grok"] as const) {
+      for (const entry of grouped.get(provider) ?? []) {
+        accounts.push({
+          id: entry.authIndex,
+          provider,
+          label: displayLabel(entry.label, settings.hideEmails),
+        });
+      }
+    }
+    for (const entry of await listDeepSeekAccounts(resolved.root, settings.managementKey)) {
+      accounts.push({
+        id: entry.authIndex,
+        provider: "deepseek",
+        label: displayLabel(entry.label, settings.hideEmails),
+      });
+    }
+    return accounts;
   } catch {
     return [];
   }
 }
 
-/** Lists accounts available under accountsDir, ignoring the enabled/disabled toggles. */
-export async function discoverAccounts(
-  config: Pick<Config, "accountsDir" | "hideEmails">,
-): Promise<AccountSummary[]> {
-  const dir = expandHome(config.accountsDir);
+/**
+ * Fetches quota/balance for every enabled account of a single provider — the provider matching
+ * the active Pi model, per the caller. These requests go through CLIProxyAPI's Management API
+ * and never consume LLM input/output tokens.
+ */
+export async function readProviderAccounts(
+  settings: Settings,
+  provider: ProviderName,
+): Promise<ReadResult> {
+  if (!settings.providers[provider]) return { items: [] };
+  if (!settings.managementKey) {
+    return { error: "Management password not configured. Run /cliproxy-usage setup." };
+  }
+  const resolved = await resolveManagementRoot(settings);
+  if ("error" in resolved) return resolved;
   try {
-    const names = (await readdir(dir)).filter((name) => name.toLowerCase().endsWith(".json"));
-    const accounts = await Promise.all(
-      names.map(async (name) => {
-        const loaded = await loadAuth(dir, name);
-        if (!loaded) return undefined;
-        return {
-          id: name,
-          label: accountLabel(loaded.auth, name, config.hideEmails),
-          provider: loaded.provider,
-        };
-      }),
+    const entries =
+      provider === "deepseek"
+        ? await listDeepSeekAccounts(resolved.root, settings.managementKey)
+        : ((await listAuthFiles(resolved.root, settings.managementKey)).get(provider) ?? []);
+    const items = await Promise.all(
+      entries
+        .filter(
+          (entry) =>
+            settings.selectionMode !== "manual" || settings.accounts[entry.authIndex] !== false,
+        )
+        .map((entry) =>
+          fetchOne(
+            resolved.root,
+            settings.managementKey as string,
+            provider,
+            entry,
+            settings.hideEmails,
+          ),
+        ),
     );
-    return accounts.filter(Boolean) as AccountSummary[];
-  } catch {
-    return [];
+    return { items };
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : String(error) };
   }
 }

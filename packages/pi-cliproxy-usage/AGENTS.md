@@ -7,9 +7,11 @@ Pi extension showing CLIProxyAPI account usage. Keep changes small, typed, and d
 ## Architecture
 
 - `index.ts`: Pi lifecycle and command wiring only.
-- `src/config.ts`: persisted configuration.
-- `src/config-ui.ts`: interactive TUI configuration.
-- `src/usage.ts`: account discovery and provider HTTP requests.
+- `src/settings.ts`: persisted configuration (including the Management API password).
+- `src/settings-ui.ts`: interactive TUI configuration (`/cliproxy-usage settings`), including auto/manual provider mode, account selection, and email masking.
+- `src/setup-ui.ts`: masked password prompt and validation flow (`setup`/`login`/`logout`).
+- `src/management-client.ts`: CLIProxyAPI Management API HTTP client (auth-files, openai-compatibility, api-call proxying).
+- `src/usage.ts`: per-provider account discovery and quota fetching, built on `management-client.ts`.
 - `src/parsers.ts`: pure provider response parsing.
 - `src/ui.ts`: formatting and widget rendering.
 - `src/types.ts`: shared types.
@@ -61,7 +63,10 @@ Use `!` and a `BREAKING CHANGE:` footer only for actual breaking changes.
 
 ## Constraints
 
-- Credentials must stay local and only go to official provider endpoints.
-- Never log or expose access/refresh tokens.
-- Configuration path: `~/.pi/agent/extensions/pi-cliproxy-usage/config.json`.
+- The Management API password (`managementKey`) and provider access tokens must never be logged, and the password must never be echoed back to the user (status only reports whether it's configured).
+- DeepSeek's api-key field returned by `/v0/management/openai-compatibility` must never be read, logged, persisted, or forwarded — only its `auth-index` is used.
+- Settings file (`pi-cliproxy-usage.json`) must be written with mode `0600`, since it can contain the management password.
+- Account selection is keyed by CLIProxyAPI `auth_index`; never use local auth-file paths as account identifiers.
+- After a 401/403 on management-password validation, do not automatically retry the same password (CLIProxyAPI temporarily bans repeated auth failures).
+- Configuration path: `<getAgentDir()>/pi-cliproxy-usage.json`, migrated automatically from the legacy `~/.pi/agent/extensions/pi-cliproxy-usage/config.json`.
 - Keep `/cliproxy-usage` as command entry point; use subcommands for additional actions.

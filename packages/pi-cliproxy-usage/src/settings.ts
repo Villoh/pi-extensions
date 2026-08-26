@@ -3,13 +3,17 @@ import { dirname } from "node:path";
 import type { Settings } from "./types.js";
 
 export const DEFAULT_SETTINGS: Settings = {
-  accountsDir: "~/.cli-proxy-api",
+  managementUrl: "",
+  selectionMode: "auto",
   refreshMinutes: 5,
   maxVisibleAccounts: 4,
-  providers: { claude: true, codex: true, grok: true },
+  providers: { claude: true, codex: true, grok: true, deepseek: true },
   accounts: {},
   hideEmails: false,
 };
+
+// Local auth discovery is retired; account selection now uses Management API auth_index values.
+const RETIRED_FIELDS = ["accountsDir"];
 
 type JsonObject = Record<string, unknown>;
 
@@ -35,10 +39,20 @@ export function normalizeSettings(value: unknown): {
   const providers = isObject(value.providers) ? value.providers : {};
   const settings: Settings = structuredClone(DEFAULT_SETTINGS);
 
-  if (typeof value.accountsDir === "string" && value.accountsDir.trim()) {
-    settings.accountsDir = value.accountsDir.trim();
-  } else if (value.accountsDir !== undefined) {
-    warnings.push("ignored invalid accountsDir");
+  if (value.selectionMode === "auto" || value.selectionMode === "manual") {
+    settings.selectionMode = value.selectionMode;
+  } else if (value.selectionMode !== undefined) {
+    warnings.push("ignored invalid selectionMode");
+  }
+  if (typeof value.managementUrl === "string") {
+    settings.managementUrl = value.managementUrl.trim();
+  } else if (value.managementUrl !== undefined) {
+    warnings.push("ignored invalid managementUrl");
+  }
+  if (typeof value.managementKey === "string" && value.managementKey.trim()) {
+    settings.managementKey = value.managementKey;
+  } else if (value.managementKey !== undefined && value.managementKey !== "") {
+    warnings.push("ignored invalid managementKey");
   }
   if (
     typeof value.refreshMinutes === "number" &&
@@ -63,13 +77,6 @@ export function normalizeSettings(value: unknown): {
   } else if (value.hideEmails !== undefined) {
     warnings.push("ignored invalid hideEmails");
   }
-  for (const provider of ["claude", "codex", "grok"] as const) {
-    if (typeof providers[provider] === "boolean") {
-      settings.providers[provider] = providers[provider];
-    } else if (providers[provider] !== undefined) {
-      warnings.push(`ignored invalid providers.${provider}`);
-    }
-  }
   if (isObject(value.accounts)) {
     for (const [id, enabled] of Object.entries(value.accounts)) {
       if (typeof enabled === "boolean") settings.accounts[id] = enabled;
@@ -77,6 +84,13 @@ export function normalizeSettings(value: unknown): {
     }
   } else if (value.accounts !== undefined) {
     warnings.push("ignored invalid accounts");
+  }
+  for (const provider of ["claude", "codex", "grok", "deepseek"] as const) {
+    if (typeof providers[provider] === "boolean") {
+      settings.providers[provider] = providers[provider];
+    } else if (providers[provider] !== undefined) {
+      warnings.push(`ignored invalid providers.${provider}`);
+    }
   }
   return { settings, raw: value, warnings };
 }
@@ -157,11 +171,10 @@ export async function saveSettings(
       ...(isObject(raw.providers) ? raw.providers : {}),
       ...settings.providers,
     },
-    accounts: {
-      ...(isObject(raw.accounts) ? raw.accounts : {}),
-      ...settings.accounts,
-    },
   };
+  for (const field of RETIRED_FIELDS) delete next[field];
+  // The settings file now stores a plaintext management password; keep it locked down even if
+  // it pre-existed with looser permissions.
   await mkdir(dirname(settingsPath), { recursive: true });
   const temporaryPath = `${settingsPath}.${process.pid}.${Date.now()}.tmp`;
   try {

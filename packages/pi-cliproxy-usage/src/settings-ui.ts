@@ -13,18 +13,13 @@ import {
   Text,
   truncateToWidth,
 } from "@earendil-works/pi-tui";
+import { resolveManagementRoot } from "./management-client.js";
 import { loadSettings, saveSettings } from "./settings.js";
-import type { AccountSummary, ProviderName, Settings } from "./types.js";
+import type { AccountSummary, ProviderName, SelectionMode, Settings } from "./types.js";
+import { createSettingsBorder } from "./ui.js";
 import { discoverAccounts } from "./usage.js";
 
-const providerIds = new Set<ProviderName>(["claude", "codex", "grok"]);
-
-function createSettingsBorder(theme: { fg(color: string, text: string): string }): Component {
-  return {
-    render: (width: number) => [theme.fg("border", "─".repeat(Math.max(1, width)))],
-    invalidate: () => {},
-  };
-}
+const providerIds = new Set<ProviderName>(["claude", "codex", "grok", "deepseek"]);
 
 function accountsSummary(accounts: AccountSummary[], enabled: Record<string, boolean>): string {
   if (accounts.length === 0) return "no accounts found";
@@ -32,11 +27,6 @@ function accountsSummary(accounts: AccountSummary[], enabled: Record<string, boo
   return `${enabledCount}/${accounts.length} enabled`;
 }
 
-/**
- * Minimal checkbox-style multi-select for a SettingsList submenu.
- * SettingsList itself only supports single-value cycling (`values`) or a
- * free-form submenu Component, so per-account selection needs this.
- */
 class MultiSelectSubmenu implements Component {
   private selectedIndex = 0;
   private readonly checked: Set<string>;
@@ -79,14 +69,22 @@ class MultiSelectSubmenu implements Component {
       }
       return;
     }
-    if (matchesKey(data, Key.up)) {
-      this.selectedIndex = Math.max(0, this.selectedIndex - 1);
-      return;
-    }
+    if (matchesKey(data, Key.up)) this.selectedIndex = Math.max(0, this.selectedIndex - 1);
     if (matchesKey(data, Key.down)) {
       this.selectedIndex = Math.min(this.options.length - 1, this.selectedIndex + 1);
     }
   }
+}
+
+function settingValue(settings: Settings, id: string): string {
+  if (id === "selectionMode") return settings.selectionMode;
+  if (id === "managementUrl") return settings.managementUrl || "(auto)";
+  if (id === "refreshMinutes") return String(settings.refreshMinutes);
+  if (id === "maxVisibleAccounts") return String(settings.maxVisibleAccounts);
+  if (providerIds.has(id as ProviderName))
+    return settings.providers[id as ProviderName] ? "enabled" : "disabled";
+  if (id === "hideEmails") return settings.hideEmails ? "enabled" : "disabled";
+  return "";
 }
 
 export async function showSettings(
@@ -99,7 +97,6 @@ export async function showSettings(
     if (ctx.hasUI) ctx.ui.notify(`Edit settings manually: ${settingsPath}`, "info");
     return;
   }
-
   const loaded = await loadSettings(settingsPath, legacySettingsPath);
   if (!loaded.writable) {
     ctx.ui.notify(`Cannot edit invalid settings: ${loaded.warnings.join(", ")}`, "error");
@@ -108,23 +105,32 @@ export async function showSettings(
   let settings = loaded.settings;
   let raw = loaded.raw;
   let saveQueue = Promise.resolve();
-  const accounts = await discoverAccounts(settings);
-  const accountOptions = accounts.map((account) => ({
+  const discovered = await discoverAccounts(settings);
+  const accountOptions = discovered.map((account) => ({
     value: account.id,
     label: `${account.label} (${account.provider})`,
   }));
+  const resolvedRoot = await resolveManagementRoot(settings);
+  const dashboardUrl = "error" in resolvedRoot ? undefined : `${resolvedRoot.root}/management.html`;
 
   await ctx.ui.custom((tui, theme, _keybindings, done) => {
     const items: SettingItem[] = [
       {
-        id: "accountsDir",
-        label: "Accounts directory",
-        description: "Directory containing CLIProxyAPI account JSON files",
-        currentValue: settings.accountsDir,
+        id: "selectionMode",
+        label: "Account selection",
+        description: "Auto follows the active model; manual shows selected accounts",
+        currentValue: settings.selectionMode,
+        values: ["auto", "manual"],
+      },
+      {
+        id: "managementUrl",
+        label: "Management URL override",
+        description: "CLIProxyAPI root URL; leave empty to reuse the configured provider's baseUrl",
+        currentValue: settings.managementUrl || "(auto)",
         submenu: (currentValue, close) => {
           const input = new Input();
-          input.setValue(currentValue);
-          input.onSubmit = (value) => close(value.trim() || undefined);
+          input.setValue(currentValue === "(auto)" ? "" : currentValue);
+          input.onSubmit = (value) => close(value.trim());
           input.onEscape = () => close(undefined);
           return input;
         },
@@ -143,7 +149,7 @@ export async function showSettings(
         currentValue: String(settings.maxVisibleAccounts),
         values: ["1", "2", "3", "4", "5", "10"],
       },
-      ...(["claude", "codex", "grok"] as const).map((provider) => ({
+      ...(["claude", "codex", "grok", "deepseek"] as const).map((provider) => ({
         id: provider,
         label: `${provider[0]?.toUpperCase()}${provider.slice(1)}`,
         description: `Show ${provider} accounts`,
@@ -157,17 +163,19 @@ export async function showSettings(
         currentValue: settings.hideEmails ? "enabled" : "disabled",
         values: ["enabled", "disabled"],
       },
-      ...(accounts.length > 0
+      ...(accountOptions.length > 0
         ? [
             {
               id: "accounts",
               label: "Accounts",
-              description: "Enable or disable individual accounts within enabled providers",
-              currentValue: accountsSummary(accounts, settings.accounts),
+              description: "Enable or disable individual accounts (used in manual mode)",
+              currentValue: accountsSummary(discovered, settings.accounts),
               submenu: (_currentValue: string, close: (value?: string) => void) =>
                 new MultiSelectSubmenu(
                   accountOptions,
-                  accounts.filter((a) => settings.accounts[a.id] !== false).map((a) => a.id),
+                  discovered
+                    .filter((account) => settings.accounts[account.id] !== false)
+                    .map((account) => account.id),
                   theme,
                   close,
                 ),
@@ -186,19 +194,17 @@ export async function showSettings(
       getSettingsListTheme(),
       (id, value) => {
         const previous = structuredClone(settings);
-        if (id === "accountsDir") settings.accountsDir = value;
+        if (id === "selectionMode") settings.selectionMode = value as SelectionMode;
+        if (id === "managementUrl") settings.managementUrl = value === "(auto)" ? "" : value;
         if (id === "refreshMinutes") settings.refreshMinutes = Number(value);
-        if (id === "maxVisibleAccounts") {
-          settings.maxVisibleAccounts = Number(value);
-        }
-        if (providerIds.has(id as ProviderName)) {
-          settings.providers[id as ProviderName] = value === "enabled";
-        }
+        if (id === "maxVisibleAccounts") settings.maxVisibleAccounts = Number(value);
         if (id === "hideEmails") settings.hideEmails = value === "enabled";
+        if (providerIds.has(id as ProviderName))
+          settings.providers[id as ProviderName] = value === "enabled";
         if (id === "accounts") {
-          const checked = new Set(value.split(",").filter(Boolean));
-          for (const account of accounts) settings.accounts[account.id] = checked.has(account.id);
-          list.updateValue("accounts", accountsSummary(accounts, settings.accounts));
+          const selected = new Set(value ? value.split(",") : []);
+          for (const account of discovered)
+            settings.accounts[account.id] = selected.has(account.id);
         }
         const next = structuredClone(settings);
         saveQueue = saveQueue
@@ -208,20 +214,12 @@ export async function showSettings(
           })
           .catch((error) => {
             settings = previous;
-            let previousValue: string;
-            if (id === "accountsDir") previousValue = previous.accountsDir;
-            else if (id === "refreshMinutes") {
-              previousValue = String(previous.refreshMinutes);
-            } else if (id === "maxVisibleAccounts") {
-              previousValue = String(previous.maxVisibleAccounts);
-            } else if (id === "accounts") {
-              previousValue = accountsSummary(accounts, previous.accounts);
-            } else if (id === "hideEmails") {
-              previousValue = previous.hideEmails ? "enabled" : "disabled";
-            } else {
-              previousValue = previous.providers[id as ProviderName] ? "enabled" : "disabled";
-            }
-            list.updateValue(id, previousValue);
+            list.updateValue(
+              id,
+              id === "accounts"
+                ? accountsSummary(discovered, previous.accounts)
+                : settingValue(previous, id),
+            );
             ctx.ui.notify(`Failed to save settings: ${error.message}`, "error");
             tui.requestRender();
           });
@@ -232,7 +230,10 @@ export async function showSettings(
     container.addChild(list);
     container.addChild(
       new Text(
-        theme.fg("dim", `Accounts directory: ${settings.accountsDir}\n${settingsPath}`),
+        theme.fg(
+          "dim",
+          `Password: ${settings.managementKey ? "configured (use /cliproxy-usage setup to change)" : "not set — run /cliproxy-usage setup"}${dashboardUrl ? `\nDashboard (if enabled): ${dashboardUrl}` : ""}\n${settingsPath}`,
+        ),
         1,
         1,
       ),
