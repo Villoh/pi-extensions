@@ -5,6 +5,7 @@
   "type": "module",
   "keywords": [
     "pi-package",
+    "pi-extension",
     "cliproxyapi",
     "usage"
   ],

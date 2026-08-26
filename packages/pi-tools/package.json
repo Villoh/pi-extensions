@@ -13,7 +13,8 @@
     "directory": "packages/pi-tools"
   },
   "keywords": [
-    "pi-package"
+    "pi-package",
+    "pi-extension"
   ],
   "files": [
     "tools.ts",

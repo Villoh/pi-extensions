@@ -20,7 +20,9 @@
     "test": "node --experimental-strip-types --test extensions/btw.test.ts"
   },
   "keywords": [
-    "pi-package"
+    "pi-package",
+    "pi-extension",
+    "pi-skill"
   ],
   "files": [
     "extensions",

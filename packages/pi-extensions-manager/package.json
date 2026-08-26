@@ -8,7 +8,8 @@
     "access": "public"
   },
   "keywords": [
-    "pi-package"
+    "pi-package",
+    "pi-extension"
   ],
   "files": [
     "extensions.ts",
