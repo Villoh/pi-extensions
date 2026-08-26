@@ -26,7 +26,7 @@ pi -e npm:@villoh/pi-tools
 Combine multiple extensions:
 
 ```bash
-pi -e npm:@villoh/pi-tools -e npm:@villoh/pi-skill-manager
+pi -e npm:@villoh/pi-tools -e npm:@villoh/pi-skills-manager
 ```
 
 ## Packages
@@ -37,7 +37,7 @@ pi -e npm:@villoh/pi-tools -e npm:@villoh/pi-skill-manager
 | [`@villoh/pi-btw`](packages/pi-btw) | [![npm](https://img.shields.io/npm/v/@villoh/pi-btw)](https://www.npmjs.com/package/@villoh/pi-btw) | Adds `/btw`, a parallel side conversation with its own Pi sub-session, tools, model settings, and handoff commands. | `pi install npm:@villoh/pi-btw` |
 | [`pi-cliproxy-usage`](packages/pi-cliproxy-usage) | [![npm](https://img.shields.io/npm/v/pi-cliproxy-usage)](https://www.npmjs.com/package/pi-cliproxy-usage) | Displays compact CLIProxyAPI account usage meters for Claude, Codex, and Grok accounts. | `pi install npm:pi-cliproxy-usage` |
 | [`@villoh/pi-extensions-manager`](packages/pi-extensions-manager) | [![npm](https://img.shields.io/npm/v/@villoh/pi-extensions-manager)](https://www.npmjs.com/package/@villoh/pi-extensions-manager) | Adds `/extensions` to enable or disable loaded extensions and reload Pi. | `pi install npm:@villoh/pi-extensions-manager` |
-| [`@villoh/pi-skill-manager`](packages/pi-skill-manager) | [![npm](https://img.shields.io/npm/v/@villoh/pi-skill-manager)](https://www.npmjs.com/package/@villoh/pi-skill-manager) | Adds `/skills` to list, enable, and disable discovered skills. | `pi install npm:@villoh/pi-skill-manager` |
+| [`@villoh/pi-skills-manager`](packages/pi-skills-manager) | [![npm](https://img.shields.io/npm/v/@villoh/pi-skills-manager)](https://www.npmjs.com/package/@villoh/pi-skills-manager) | Adds `/skills` to list, enable, and disable discovered skills. | `pi install npm:@villoh/pi-skills-manager` |
 | [`@villoh/pi-tools`](packages/pi-tools) | [![npm](https://img.shields.io/npm/v/@villoh/pi-tools)](https://www.npmjs.com/package/@villoh/pi-tools) | Adds `/tools` to enable or disable individual tools during the current session. | `pi install npm:@villoh/pi-tools` |
 
 > `pi-cliproxy-usage` keeps its original unscoped name because it's already published under it. Every other package moved to the `@villoh` npm scope to avoid clashing with unrelated packages that already existed under the unscoped name.

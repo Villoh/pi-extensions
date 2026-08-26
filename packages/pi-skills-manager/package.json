@@ -1,5 +1,5 @@
 {
-  "name": "@villoh/pi-skill-manager",
+  "name": "@villoh/pi-skills-manager",
   "version": "0.0.1",
   "description": "Interactive /skills selector for enabling and disabling Pi skills.",
   "type": "module",
@@ -8,7 +8,8 @@
     "access": "public"
   },
   "keywords": [
-    "pi-package"
+    "pi-package",
+    "pi-extension"
   ],
   "files": [
     "skills.ts",

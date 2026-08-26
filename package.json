@@ -11,7 +11,7 @@
       "./packages/pi-btw/extensions/btw.ts",
       "./packages/pi-cliproxy-usage/index.ts",
       "./packages/pi-extensions-manager/extensions.ts",
-      "./packages/pi-skill-manager/skills.ts",
+      "./packages/pi-skills-manager/skills.ts",
       "./packages/pi-tools/tools.ts"
     ],
     "skills": [

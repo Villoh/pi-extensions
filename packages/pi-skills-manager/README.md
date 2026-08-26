@@ -1,4 +1,4 @@
-# pi-skill-manager
+# pi-skills-manager
 
 Adds `/skills`, an interactive selector for enabling and disabling discovered Pi skills.
 
@@ -7,21 +7,21 @@ Adds `/skills`, an interactive selector for enabling and disabling discovered Pi
 From npm:
 
 ```bash
-pi install npm:@villoh/pi-skill-manager
+pi install npm:@villoh/pi-skills-manager
 ```
 
 Try it without installing:
 
 ```bash
-pi -e npm:@villoh/pi-skill-manager
+pi -e npm:@villoh/pi-skills-manager
 ```
 
 Or from a local checkout, useful while developing:
 
 ```bash
-pi install /absolute/path/to/pi-skill-manager
+pi install /absolute/path/to/pi-skills-manager
 # or, without installing:
-pi -e /absolute/path/to/pi-skill-manager
+pi -e /absolute/path/to/pi-skills-manager
 ```
 
 Disabling a skill adds `disable-model-invocation: true` to its `SKILL.md` frontmatter. Enabling it removes that field. Pi reloads resources after a change.
