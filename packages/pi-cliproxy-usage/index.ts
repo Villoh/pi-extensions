@@ -14,9 +14,9 @@ import type { AccountUsage, ProviderName, Settings } from "./src/types.js";
 import {
   clearUsage,
   createUsageReport,
-  type UsageReport,
   renderReport,
   renderUsage,
+  type UsageReport,
 } from "./src/ui.js";
 import { readProviderAccounts } from "./src/usage.js";
 
