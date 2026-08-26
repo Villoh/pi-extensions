@@ -95,13 +95,13 @@ Older `~/.pi/agent/extensions/pi-cliproxy-usage/config.json` files migrate autom
 - `/cliproxy-usage login` — alias for setup
 - `/cliproxy-usage logout` — remove the saved Management API password
 - `/cliproxy-usage settings` — choose auto/manual selection, choose providers/accounts, toggle email masking, and edit refresh settings
-- `/cliproxy-usage status` — show effective URLs, settings warnings, and the current provider's last refresh time
+- `/cliproxy-usage status` — open effective URLs, settings warnings, and the current provider's last refresh time
 
 Setup, settings, and status also print the CLIProxyAPI web dashboard URL (`<root>/management.html`) when a root resolves. It only loads when the server's `remote-management.disable-control-panel` is `false` (or unset) — with it `true`, CLIProxyAPI skips downloading `management.html` and the page 404s.
 
 - `/cliproxy-usage help` — show commands and manual settings path
 
-Detailed quota views (`/cliproxy-usage refresh`, `/cliproxy-usage`) appear in the transcript with the same titled-section hierarchy as Pi's `/session` view. They include the provider reset countdown when the upstream API supplies a reset timestamp; the compact widget intentionally omits reset times.
+Detailed quota views (`/cliproxy-usage refresh`, `/cliproxy-usage`) open as a dismissible overlay above the chat, with the same titled-section hierarchy as Pi's `/session` view. They include the provider reset countdown when the upstream API supplies a reset timestamp; the compact widget intentionally omits reset times.
 
 If an upstream provider quota request returns 401 or 403, let CLIProxyAPI refresh the account or log in again.
 

@@ -5,7 +5,7 @@ import {
   type ExtensionContext,
   getAgentDir,
 } from "@earendil-works/pi-coding-agent";
-import { Text } from "@earendil-works/pi-tui";
+import { Container, Key, matchesKey, Text } from "@earendil-works/pi-tui";
 import { resolveManagementRoot } from "./src/management-client.js";
 import { loadSettings } from "./src/settings.js";
 import { showSettings } from "./src/settings-ui.js";
@@ -13,6 +13,7 @@ import { runLogout, runSetup } from "./src/setup-ui.js";
 import type { AccountUsage, ProviderName, Settings } from "./src/types.js";
 import {
   clearUsage,
+  createSettingsBorder,
   createUsageReport,
   renderReport,
   renderUsage,
@@ -61,17 +62,41 @@ export default function (pi: ExtensionAPI) {
   let refreshing: Promise<void> | undefined;
   const cache = new Map<ProviderName, { items: AccountUsage[]; fetchedAt: number }>();
 
-  pi.registerEntryRenderer<UsageReport>("cliproxy-usage", (entry, _options, theme) =>
-    entry.data ? new Text(renderReport(entry.data, theme), 1, 0) : undefined,
-  );
-
-  const showReport = (
+  const showReport = async (
     ctx: ExtensionContext,
     report: UsageReport,
     level: "info" | "warning" = "info",
   ) => {
-    if (ctx.mode === "tui") pi.appendEntry("cliproxy-usage", report);
-    else ctx.ui.notify(renderReport(report, ctx.ui.theme), level);
+    if (ctx.mode !== "tui") {
+      ctx.ui.notify(renderReport(report, ctx.ui.theme), level);
+      return;
+    }
+    await ctx.ui.custom<void>(
+      (_tui, theme, _keybindings, done) => {
+        const container = new Container();
+        container.addChild(createSettingsBorder(theme));
+        container.addChild(new Text(renderReport(report, theme), 1, 1));
+        container.addChild(new Text(theme.fg("dim", "Enter or Esc to close"), 1, 0));
+        container.addChild(createSettingsBorder(theme));
+        return {
+          render: (width) => container.render(width),
+          invalidate: () => container.invalidate(),
+          handleInput(data: string) {
+            if (matchesKey(data, Key.enter) || matchesKey(data, Key.escape)) done();
+          },
+        };
+      },
+      {
+        overlay: true,
+        overlayOptions: {
+          anchor: "center",
+          width: "70%",
+          minWidth: 48,
+          maxHeight: "80%",
+          margin: 2,
+        },
+      },
+    );
   };
 
   const refresh = (ctx: ExtensionContext, opts: { notify?: boolean; force?: boolean } = {}) =>
@@ -115,7 +140,7 @@ export default function (pi: ExtensionAPI) {
       }
       renderUsage(ctx, allItems, loaded.settings.maxVisibleAccounts, loaded.settings.hideEmails);
       if (opts.notify)
-        showReport(
+        await showReport(
           ctx,
           createUsageReport(allItems, loaded.settings.hideEmails),
           allItems.some((item) => item.error) ? "warning" : "info",
@@ -152,7 +177,7 @@ export default function (pi: ExtensionAPI) {
       )
       .join(", ");
     const unavailable = "error" in resolved;
-    showReport(
+    await showReport(
       ctx,
       {
         title: "CLIProxyAPI Status",
