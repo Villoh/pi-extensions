@@ -3,20 +3,11 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import {
   CONFIG_DIR_NAME,
+  DynamicBorder,
   type ExtensionAPI,
   type ExtensionContext,
-  getSettingsListTheme,
-  ModelSelectorComponent,
 } from "@earendil-works/pi-coding-agent";
-import {
-  type Component,
-  Container,
-  type SettingItem,
-  SettingsList,
-  Spacer,
-  Text,
-  type TUI,
-} from "@earendil-works/pi-tui";
+import { Container, SelectList, Text, type SelectItem } from "@earendil-works/pi-tui";
 import {
   getModelCandidates,
   getModelCompletionValues,
@@ -142,8 +133,7 @@ export default function piAutoNameSessionExtension(pi: ExtensionAPI): void {
         return;
       }
       if (subcommand === "model") {
-        // ModelSelectorComponent refreshes catalogs in the background. Do not
-        // block the command on a second, serial catalog refresh here.
+        // Prefer available models, but retain registered models without auth.
         const available = ctx.modelRegistry.getAvailable();
         registeredModelRefs = getRegisteredModelRefs(
           available.length > 0 ? available : ctx.modelRegistry.getAll(),
@@ -159,7 +149,7 @@ export default function piAutoNameSessionExtension(pi: ExtensionAPI): void {
       }
       if (!subcommand || subcommand === "config" || subcommand === "settings") {
         const token = sessionToken;
-        await openAutoNameSettings(ctx, () => token === sessionToken);
+        await configureAutoNameModel(ctx, registeredModelRefs, "", () => token === sessionToken);
         return;
       }
       ctx.ui.notify(USAGE_TEXT, "info");
@@ -218,86 +208,6 @@ export default function piAutoNameSessionExtension(pi: ExtensionAPI): void {
   });
 }
 
-function createSettingsBorder(theme: { fg(color: string, text: string): string }): Component {
-  return {
-    render: (width: number) => [theme.fg("border", "─".repeat(Math.max(1, width)))],
-    invalidate: () => {},
-  };
-}
-
-async function openAutoNameSettings(
-  ctx: ExtensionContext,
-  isCurrent: () => boolean,
-): Promise<void> {
-  const config = await loadModelConfig();
-  if (!isCurrent()) return;
-  if (!ctx.hasUI) {
-    ctx.ui.notify(`Auto-name model: ${config.selected ?? "session model"}`, "info");
-    return;
-  }
-
-  await ctx.ui.custom<void>((tui, theme, _keybindings, done) => {
-    let current = config;
-    let settingsList: SettingsList;
-    const items: SettingItem[] = [
-      {
-        id: "model",
-        label: "Model",
-        description: "Model used to generate session titles",
-        currentValue: current.selected ?? "session model",
-        submenu: (
-          _currentValue: string,
-          submenuDone: (selectedValue?: string) => void,
-        ): Component => createAutoNameModelSelector(ctx, tui, submenuDone),
-      },
-    ];
-
-    settingsList = new SettingsList(
-      items,
-      10,
-      getSettingsListTheme(),
-      (id: string, newValue: string) => {
-        if (id !== "model") return;
-        current = normalizeModelConfig({
-          models: [newValue, ...current.models],
-          selected: newValue,
-        });
-        settingsList.updateValue("model", newValue);
-        void saveModelConfig(current)
-          .then(() => {
-            if (isCurrent()) {
-              ctx.ui.notify(`Auto-name model: ${newValue}`, "info");
-            }
-          })
-          .catch((error) => {
-            console.error("[pi-auto-name-session] Failed to save model config:", error);
-            if (isCurrent()) {
-              ctx.ui.notify("Could not save auto-name model configuration", "error");
-            }
-          });
-      },
-      () => done(),
-    );
-
-    const container = new Container();
-    container.addChild(createSettingsBorder(theme));
-    container.addChild(new Text(theme.fg("accent", theme.bold("Auto-name")), 1, 1));
-    container.addChild(new Text(theme.fg("dim", "Configure automatic session naming."), 1, 1));
-    container.addChild(new Spacer(1));
-    container.addChild(settingsList);
-    container.addChild(createSettingsBorder(theme));
-
-    return {
-      render: (width: number) => container.render(width),
-      invalidate: () => container.invalidate(),
-      handleInput: (data: string) => {
-        settingsList.handleInput(data);
-        tui.requestRender();
-      },
-    };
-  });
-}
-
 async function configureAutoNameModel(
   ctx: ExtensionContext,
   registeredModelRefs: string[],
@@ -317,7 +227,7 @@ async function configureAutoNameModel(
       ctx.ui.notify(`Selected auto-name model: ${config.selected ?? "session model"}`, "info");
       return;
     }
-    selected = (await selectAutoNameModel(ctx)) ?? "";
+    selected = (await selectAutoNameModel(ctx, registeredModelRefs)) ?? "";
     if (!isCurrent() || !selected) return;
   }
 
@@ -348,39 +258,41 @@ async function configureAutoNameModel(
   if (isCurrent()) ctx.ui.notify(`Auto-name model: ${selected}`, "info");
 }
 
-function createAutoNameModelSelector(
+async function selectAutoNameModel(
   ctx: ExtensionContext,
-  tui: TUI,
-  done: (selectedValue?: string) => void,
-): Component {
-  const modelRuntime = {
-    getAvailableSnapshot: () => {
-      const available = ctx.modelRegistry.getAvailable();
-      return available.length > 0 ? available : ctx.modelRegistry.getAll();
-    },
-    getModel: (provider: string, id: string) => ctx.modelRegistry.find(provider, id),
-    getError: () => ctx.modelRegistry.getError(),
-    // Auto-name configuration should not block on provider discovery. The
-    // selector already has the registry snapshot; /model remains the place
-    // for an explicit catalog refresh.
-    refresh: async () => ({ aborted: false, errors: new Map<string, Error>() }),
-  };
+  registeredModelRefs: string[],
+): Promise<string | undefined> {
+  const items: SelectItem[] = registeredModelRefs.map((value) => ({ value, label: value }));
+  const selected = await ctx.ui.custom<string | null>((tui, theme, _keybindings, done) => {
+    const container = new Container();
+    const border = () => new DynamicBorder((text: string) => theme.fg("accent", text));
+    const list = new SelectList(items, Math.min(items.length, 10), {
+      selectedPrefix: (text) => theme.fg("accent", text),
+      selectedText: (text) => theme.fg("accent", text),
+      description: (text) => theme.fg("muted", text),
+      scrollInfo: (text) => theme.fg("dim", text),
+      noMatch: (text) => theme.fg("warning", text),
+    });
 
-  return new ModelSelectorComponent(
-    tui,
-    ctx.model,
-    { setDefaultModelAndProvider: () => {} } as never,
-    modelRuntime as never,
-    [],
-    (model) => done(`${model.provider}/${model.id}`),
-    () => done(undefined),
-  );
-}
+    list.onSelect = (item) => done(item.value);
+    list.onCancel = () => done(null);
+    container.addChild(border());
+    container.addChild(new Text(theme.fg("accent", theme.bold("Auto-name model")), 1, 0));
+    container.addChild(list);
+    container.addChild(new Text(theme.fg("dim", "↑↓ navigate · enter select · esc cancel"), 1, 0));
+    container.addChild(border());
 
-async function selectAutoNameModel(ctx: ExtensionContext): Promise<string | undefined> {
-  return ctx.ui.custom((tui, _theme, _keybindings, done) =>
-    createAutoNameModelSelector(ctx, tui, done),
-  );
+    return {
+      render: (width) => container.render(width),
+      invalidate: () => container.invalidate(),
+      handleInput: (data) => {
+        list.handleInput(data);
+        tui.requestRender();
+      },
+    };
+  });
+
+  return selected ?? undefined;
 }
 
 async function loadModelConfig(): Promise<ModelConfig> {
