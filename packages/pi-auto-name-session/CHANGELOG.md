@@ -1,5 +1,11 @@
 # @villoh/pi-auto-name-session
 
+## 0.1.3
+
+### Patch Changes
+
+- 8639f9a: Use a bounded, scrollable model selector for auto-name settings.
+
 ## 0.1.2
 
 ### Patch Changes
