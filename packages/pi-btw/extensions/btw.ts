@@ -332,6 +332,7 @@ function createBtwResourceLoader(
 function getModelRuntime(ctx: ExtensionCommandContext): ModelRuntime {
   // ModelRegistry keeps the active runtime private, but sub-sessions must share it
   // so extension-registered providers such as CLIProxyAPI remain available.
+  // SAFETY: pi's ModelRegistry exposes `runtime` at runtime but not in its public type.
   return (ctx.modelRegistry as unknown as { runtime: ModelRuntime }).runtime;
 }
 
@@ -579,6 +580,25 @@ export function stripForeignToolActivity(
   return filtered;
 }
 
+/**
+ * Pi 1.1+ system messages carry `toolsAdded`/`toolsRemoved` deltas for the
+ * parent's toolset. Replayed into the child they reference tools it never
+ * declared, and Anthropic rejects the request (400 tool_addition/tool_removal
+ * references unknown tool). The child declares its own tools, so drop them.
+ */
+export function withoutParentToolDeclarations(message: Message): Message {
+  if ((message as { role: string }).role !== "system") return message;
+  const {
+    toolsAdded: _added,
+    toolsRemoved: _removed,
+    ...rest
+  } = message as Message & {
+    toolsAdded?: unknown;
+    toolsRemoved?: unknown;
+  };
+  return rest as Message;
+}
+
 function buildBtwSeedState(
   ctx: ExtensionCommandContext,
   thread: BtwDetails[],
@@ -604,6 +624,7 @@ function buildBtwSeedState(
             return [];
           }
 
+          // SAFETY: fallback path for malformed entries; every field is validated below.
           const message = entry as unknown as Partial<Message> & {
             role?: string;
             customType?: string;
@@ -622,7 +643,9 @@ function buildBtwSeedState(
         }),
       );
     }
-    messages.push(...stripForeignToolActivity(contextMessages, allowedTools));
+    messages.push(
+      ...stripForeignToolActivity(contextMessages, allowedTools).map(withoutParentToolDeclarations),
+    );
   }
 
   const sideThreadStartIndex = messages.length;
@@ -2185,8 +2208,23 @@ export default function (pi: ExtensionAPI) {
     const config = readBtwConfig();
     const toolNames = resolveBtwToolNames(config);
 
+    const { messages: seedMessages, sideThreadStartIndex } = buildBtwSeedState(
+      ctx,
+      pendingThread,
+      mode,
+      settings.model,
+      new Set(toolNames),
+    );
+    // Pi 0.87+ builds provider context from the session manager, not from
+    // agent.state.messages, so seed it before creating the session.
+    const sessionManager = SessionManager.inMemory(ctx.cwd);
+    for (const message of seedMessages) {
+      sessionManager.appendMessage(message);
+    }
+
     const { session } = await createAgentSession({
-      sessionManager: SessionManager.inMemory(),
+      cwd: ctx.cwd,
+      sessionManager,
       model: settings.model,
       modelRuntime: getModelRuntime(ctx),
       thinkingLevel: settings.thinkingLevel,
@@ -2195,17 +2233,6 @@ export default function (pi: ExtensionAPI) {
       tools: toolNames,
       resourceLoader: createBtwResourceLoader(ctx),
     });
-
-    const { messages: seedMessages, sideThreadStartIndex } = buildBtwSeedState(
-      ctx,
-      pendingThread,
-      mode,
-      settings.model,
-      new Set(toolNames),
-    );
-    if (seedMessages.length > 0) {
-      session.agent.state.messages = seedMessages as typeof session.state.messages;
-    }
 
     return { session, mode, subscriptions: new Set(), sideThreadStartIndex };
   }
@@ -2373,6 +2400,7 @@ export default function (pi: ExtensionAPI) {
         if (current.entries.length > 0) {
           segments.push(current);
         }
+        // SAFETY: custom entries filtered by customType carry `data` of this shape; fields are checked before use.
         const details = (entry as unknown as { data?: BtwResetDetails }).data;
         current = {
           mode: details?.mode ?? "contextual",
@@ -2383,6 +2411,7 @@ export default function (pi: ExtensionAPI) {
       }
 
       if (isCustomEntry(entry, BTW_ENTRY_TYPE)) {
+        // SAFETY: custom entries filtered by customType carry `data` of this shape; fields are checked before use.
         const details = (entry as unknown as { data?: BtwDetails }).data;
         if (details?.question && details.answer) {
           current.entries.push(details);
@@ -2779,6 +2808,7 @@ export default function (pi: ExtensionAPI) {
     for (let i = 0; i < branch.length; i++) {
       if (isCustomEntry(branch[i], BTW_MODEL_OVERRIDE_TYPE)) {
         sawModelOverride = true;
+        // SAFETY: custom entries filtered by customType carry `data` of this shape; fields are checked before use.
         const details = (branch[i] as unknown as { data?: BtwModelOverrideDetails }).data;
         if (details?.action === "set") {
           const resolved = ctx.modelRegistry.find(details.provider, details.id);
@@ -2795,6 +2825,7 @@ export default function (pi: ExtensionAPI) {
 
       if (isCustomEntry(branch[i], BTW_THINKING_OVERRIDE_TYPE)) {
         sawThinkingOverride = true;
+        // SAFETY: custom entries filtered by customType carry `data` of this shape; fields are checked before use.
         const details = (branch[i] as unknown as { data?: BtwThinkingOverrideDetails }).data;
         btwThinkingOverride =
           details?.action === "set"
@@ -2806,6 +2837,7 @@ export default function (pi: ExtensionAPI) {
 
       if (isCustomEntry(branch[i], BTW_RESET_TYPE)) {
         lastResetIndex = i;
+        // SAFETY: custom entries filtered by customType carry `data` of this shape; fields are checked before use.
         const details = (branch[i] as unknown as { data?: BtwResetDetails }).data;
         pendingMode = details?.mode ?? "contextual";
       }
@@ -2831,6 +2863,7 @@ export default function (pi: ExtensionAPI) {
         continue;
       }
 
+      // SAFETY: custom entries filtered by customType carry `data` of this shape; fields are checked before use.
       const details = (entry as unknown as { data?: BtwDetails }).data;
       if (!details?.question || !details.answer) {
         continue;

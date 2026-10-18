@@ -2,7 +2,11 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { BTW_SUB_SESSION_TOOL_SET, stripForeignToolActivity } from "./btw.ts";
+import {
+  BTW_SUB_SESSION_TOOL_SET,
+  stripForeignToolActivity,
+  withoutParentToolDeclarations,
+} from "./btw.ts";
 
 function toolCallMessage(name: string, id = "call-1") {
   return {
@@ -95,4 +99,11 @@ test("drops a message that only has a redacted thinking block", () => {
     },
   ];
   assert.deepEqual(stripForeignToolActivity(messages, BTW_SUB_SESSION_TOOL_SET), []);
+});
+
+test("strips parent tool declarations from system messages only", () => {
+  const system = { role: "system", content: "x", toolsAdded: ["mcp"], toolsRemoved: ["edit"] };
+  assert.deepEqual(withoutParentToolDeclarations(system), { role: "system", content: "x" });
+  const user = { role: "user", content: [], toolsAdded: ["keep"] };
+  assert.equal(withoutParentToolDeclarations(user), user);
 });
