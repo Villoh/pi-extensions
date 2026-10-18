@@ -558,7 +558,7 @@ export function streamDevin(
         "",
       );
       const modelUid = resolveModelUid(model.id, model.thinkingLevelMap, options?.reasoning);
-      const mapped = mapContextToChat(context, model.id);
+      const mapped = mapContextToChat(context, model);
       let payload: DevinPayload = {
         system: mapped.systemPrompt,
         messages: mapped.messages,

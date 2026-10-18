@@ -1,12 +1,15 @@
 import {
+  type Api,
   collapseSystemMessages,
   getCurrentSystemPrompt,
   getCurrentTools,
   type Message,
+  type Model,
   type Tool,
   type TranscriptContext,
   withoutInitialSystemMessage,
 } from "@earendil-works/pi-ai";
+import { transformMessages } from "@earendil-works/pi-ai/api/transform-messages";
 import { type ChatThinking, unpackThinkingSignature } from "./thinking.js";
 
 export interface ContentPart {
@@ -53,12 +56,17 @@ function userContent(content: Message["content"]): string | ContentPart[] {
   return parts;
 }
 
-export function mapContextToChat(context: TranscriptContext, modelId?: string): MappedChat {
+export function mapContextToChat(context: TranscriptContext, model?: Model<Api>): MappedChat {
+  const modelId = model?.id;
   // Fold later system updates into the single prompt sent separately to Devin.
   const transcript = collapseSystemMessages(context);
   const systemPrompt = getCurrentSystemPrompt(transcript.messages);
   const messages: ChatHistoryItem[] = [];
-  for (const message of withoutInitialSystemMessage(transcript.messages)) {
+  const history = withoutInitialSystemMessage(transcript.messages);
+  // Drop aborted/errored turns and answer orphaned tool calls, like Pi's built-in
+  // providers do. Replaying an interrupted tool call without a result makes the
+  // server reject every later request ("please try a different model").
+  for (const message of model ? transformMessages(history as Message[], model) : history) {
     if (message.role === "user") {
       messages.push({ role: "user", content: userContent(message.content) });
       continue;

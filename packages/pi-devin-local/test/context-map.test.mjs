@@ -76,3 +76,36 @@ test("keeps the newest images within the budget and stubs older ones", () => {
     { role: "user", content: [{ type: "text", text: "look" }, image(3)] },
   ]);
 });
+
+// Regression: an interrupted turn left a tool call without a result in history,
+// and the server rejected every later request ("please try a different model").
+test("drops aborted turns and answers orphaned tool calls", () => {
+  const model = { id: "claude-opus-5.5", provider: "devin", api: "devin-local", input: ["text"] };
+  const assistant = (stopReason, id) => ({
+    role: "assistant",
+    content: [{ type: "toolCall", id, name: "bash", arguments: { command: "ls" } }],
+    provider: "devin",
+    api: "devin-local",
+    model: model.id,
+    stopReason,
+    timestamp: 1,
+  });
+  const context = normalizeContext({
+    messages: [
+      { role: "user", content: "go", timestamp: 1 },
+      assistant("toolUse", "t1"),
+      assistant("aborted", "t2"),
+      { role: "user", content: "retry", timestamp: 2 },
+    ],
+  });
+  const { messages } = mapContextToChat(context, model);
+  assert.deepEqual(
+    messages.map((m) => [m.role, m.tool_call_id ?? m.tool_calls?.[0]?.id ?? m.content]),
+    [
+      ["user", "go"],
+      ["assistant", "t1"],
+      ["tool", "t1"],
+      ["user", "retry"],
+    ],
+  );
+});
