@@ -120,5 +120,29 @@ export function mapContextToChat(context: TranscriptContext, modelId?: string): 
     parameters: tool.parameters,
   }));
 
-  return { systemPrompt: systemPrompt || undefined, messages, tools };
+  return { systemPrompt: systemPrompt || undefined, messages: capImages(messages), tools };
+}
+
+// server.codeium.com's nginx rejects request bodies over ~10 MB with a 413, and
+// every turn replays all history images as base64, which barely gzips. Keep the
+// newest images within budget and stub out older ones.
+const IMAGE_BUDGET_CHARS = 7 * 1024 * 1024;
+export const OMITTED_IMAGE_TEXT = "[image omitted: request size limit]";
+
+export function capImages(
+  messages: ChatHistoryItem[],
+  budget = IMAGE_BUDGET_CHARS,
+): ChatHistoryItem[] {
+  let used = 0;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const content = messages[i].content;
+    if (typeof content === "string") continue;
+    for (let j = content.length - 1; j >= 0; j--) {
+      const part = content[j];
+      if (part.type !== "image") continue;
+      used += part.data?.length ?? 0;
+      if (used > budget) content[j] = { type: "text", text: OMITTED_IMAGE_TEXT };
+    }
+  }
+  return messages;
 }

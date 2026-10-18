@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { normalizeContext } from "@earendil-works/pi-ai";
-import { mapContextToChat } from "../src/context-map.ts";
+import { capImages, mapContextToChat, OMITTED_IMAGE_TEXT } from "../src/context-map.ts";
 
 const tool = (name) => ({
   name,
@@ -59,4 +59,20 @@ test("accepts an empty transcript", () => {
     messages: [],
     tools: [],
   });
+});
+
+// Regression: replaying every history image as base64 pushed requests past the
+// server's ~10 MB body limit (nginx 413).
+test("keeps the newest images within the budget and stubs older ones", () => {
+  const image = (size) => ({ type: "image", mimeType: "image/png", data: "x".repeat(size) });
+  const messages = [
+    { role: "user", content: [image(4)] },
+    { role: "tool", content: [image(4)], tool_call_id: "t1" },
+    { role: "user", content: [{ type: "text", text: "look" }, image(3)] },
+  ];
+  assert.deepEqual(capImages(messages, 8), [
+    { role: "user", content: [{ type: "text", text: OMITTED_IMAGE_TEXT }] },
+    { role: "tool", content: [image(4)], tool_call_id: "t1" },
+    { role: "user", content: [{ type: "text", text: "look" }, image(3)] },
+  ]);
 });
