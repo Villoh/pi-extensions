@@ -1,6 +1,6 @@
 # pi-devin-local
 
-> **This fork** is based on [`mizorewww/pi-devin`](https://github.com/mizorewww/pi-devin) (npm `pi-devin-local`, itself a fork of [`kashyab12/pi-devin`](https://github.com/kashyab12/pi-devin)), republished here under the `@villoh` scope. It caps replayed history images so requests stay under the server's ~10 MB body limit (HTTP 413). It also drops aborted/errored turns and answers orphaned tool calls before replaying history.
+> **This fork** is based on [`mizorewww/pi-devin`](https://github.com/mizorewww/pi-devin) (npm `pi-devin-local`, itself a fork of [`kashyab12/pi-devin`](https://github.com/kashyab12/pi-devin)), republished here under the `@villoh` scope. It caps replayed history images so requests stay under the server's ~10 MB body limit (HTTP 413). It also drops aborted/errored turns and answers orphaned tool calls before replaying history. `which` is resolved from `PATH` (NixOS has no `/usr/bin/which`).
 
 A [Pi](https://pi.dev) package that uses **Devin Local** models inside Pi.
 

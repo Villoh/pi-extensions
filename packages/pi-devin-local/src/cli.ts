@@ -75,7 +75,7 @@ export async function whichDevin(): Promise<string | null> {
   if (known) return known;
   // Windows has no `which`; use `where` and probe the returned paths directly.
   const isWindows = process.platform === "win32";
-  const locator = isWindows ? "where.exe" : "/usr/bin/which";
+  const locator = isWindows ? "where.exe" : "which";
   const candidates = isWindows ? ["devin.exe", "devin.cmd", "devin"] : ["devin"];
   for (const candidate of candidates) {
     try {
