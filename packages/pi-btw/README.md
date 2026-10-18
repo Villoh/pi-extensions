@@ -92,9 +92,12 @@ When the thread has more than one exchange, `/btw inject` and `/btw summarize` n
 
 ## Overlay controls
 
-- `Alt+/` toggles focus between BTW and the main editor without closing the overlay
-- `Ctrl+Alt+W` is a fallback focus toggle for terminals that do not deliver `Alt+/` as a usable shortcut
-- `Esc` still dismisses BTW immediately while the overlay is focused
+- `Alt+/`, `Super+/`, or `Ctrl+Alt+W` toggles focus between BTW and the main editor without closing the overlay (`Super+/` needs a terminal that reports Super, e.g. via the Kitty keyboard protocol)
+- set `PI_BTW_FOCUS_KEYS` to a comma-separated list of pi-tui key ids (e.g. `PI_BTW_FOCUS_KEYS="ctrl+/,ctrl+alt+b"`) to replace those focus keys; invalid entries are ignored and the defaults are kept if none are usable
+- `Alt+w` toggles between the framed window layout and a full-width layout without side borders, so terminal Shift+drag selection captures only the dialog's text
+- while BTW is streaming, the first `Esc` aborts the request (and drops queued follow-ups) and keeps the partial transcript visible; press `Esc` again to dismiss
+- while BTW is idle, `Esc` dismisses the overlay immediately
+- transcript, thinking, and saved `--save` notes render as Markdown
 - BTW now opens top-centered so the main session remains visible underneath it
 
 ### `/btw new [question]`

@@ -17,6 +17,7 @@ import {
   type ExtensionCommandContext,
   type ExtensionContext,
   getAgentDir,
+  getMarkdownTheme,
   getSettingsListTheme,
   type ModelRuntime,
   type ResourceLoader,
@@ -30,8 +31,12 @@ import {
   Input,
   Key,
   type KeybindingsManager,
+  type KeyId,
+  Markdown,
+  type MarkdownTheme,
   matchesKey,
   type OverlayHandle,
+  type OverlayOptions,
   type SettingItem,
   SettingsList,
   Text,
@@ -47,7 +52,45 @@ const BTW_RESET_TYPE = "btw-thread-reset";
 const BTW_MODEL_OVERRIDE_TYPE = "btw-model-override";
 const BTW_THINKING_OVERRIDE_TYPE = "btw-thinking-override";
 const BTW_CONFIG_FILENAME = "pi-btw.json";
-const BTW_FOCUS_SHORTCUTS = [Key.alt("/"), Key.ctrlAlt("w")] as const;
+const BTW_DEFAULT_FOCUS_SHORTCUTS: readonly KeyId[] = [
+  Key.alt("/"),
+  Key.super("/"),
+  Key.ctrlAlt("w"),
+];
+// pi-tui KeyId grammar: modifiers + one letter/digit/symbol/named key.
+const BTW_KEY_ID_PATTERN =
+  /^(?:(?:ctrl|shift|alt|super)\+)*(?:[a-z0-9`\-=[\]\\;',./!@#$%^&*()_+|~{}:<>?]|escape|esc|enter|return|tab|space|backspace|delete|insert|clear|home|end|pageup|pagedown|up|down|left|right|f[1-9]|f1[0-2])$/;
+
+/**
+ * Focus-toggle shortcuts. PI_BTW_FOCUS_KEYS (comma-separated pi-tui key ids,
+ * e.g. "ctrl+/,ctrl+alt+b") replaces the defaults; invalid entries are
+ * ignored and the defaults are kept if none remain, so focus can't get lost.
+ */
+export function resolveBtwFocusShortcuts(env: NodeJS.ProcessEnv = process.env): KeyId[] {
+  const parsed = (env.PI_BTW_FOCUS_KEYS ?? "")
+    .split(",")
+    .map((part) => part.trim().toLowerCase())
+    .filter((part) => BTW_KEY_ID_PATTERN.test(part));
+  const unique = [...new Set(parsed)] as KeyId[];
+  return unique.length > 0 ? unique : [...BTW_DEFAULT_FOCUS_SHORTCUTS];
+}
+
+export function describeFocusShortcuts(shortcuts: readonly KeyId[]): string {
+  const labels = shortcuts.map((shortcut) =>
+    shortcut
+      .split("+")
+      .map((part) =>
+        part.length === 1 ? part.toUpperCase() : part.charAt(0).toUpperCase() + part.slice(1),
+      )
+      .join("+"),
+  );
+  return labels.length <= 1
+    ? (labels[0] ?? "")
+    : `${labels.slice(0, -1).join(", ")} or ${labels.at(-1)}`;
+}
+
+const BTW_FOCUS_SHORTCUTS = resolveBtwFocusShortcuts();
+const BTW_FOCUS_SHORTCUTS_LABEL = describeFocusShortcuts(BTW_FOCUS_SHORTCUTS);
 
 // Sub-session toolset for `/btw` threads. Single source of truth:
 // createBtwSubSession enables exactly these tools, and buildBtwSeedState
@@ -132,6 +175,11 @@ class BtwMultiSelectSubmenu implements Component {
 function matchesBtwFocusShortcut(data: string): boolean {
   return BTW_FOCUS_SHORTCUTS.some((shortcut) => matchesKey(data, shortcut));
 }
+
+/** Toggles the overlay between framed "window" width and edge-to-edge "full" width. */
+const BTW_WIDTH_TOGGLE_SHORTCUT = Key.alt("w");
+
+type BtwOverlayWidthMode = "window" | "full";
 
 const BTW_SYSTEM_PROMPT = [
   "You are having an aside conversation with the user, separate from their main working session.",
@@ -263,6 +311,7 @@ type BtwSessionRuntime = {
   mode: BtwThreadMode;
   subscriptions: Set<() => void>;
   sideThreadStartIndex: number;
+  abortPromise?: Promise<void>;
 };
 
 type OverlayRuntime = {
@@ -817,26 +866,6 @@ function finishTranscriptTurn(state: BtwTranscriptState, turnId?: number | null)
   }
 }
 
-function removeTranscriptTurn(state: BtwTranscriptState, turnId: number | null): void {
-  if (turnId === null) {
-    return;
-  }
-
-  state.entries = state.entries.filter((entry) => entry.turnId !== turnId);
-  for (const [toolCallId, toolCall] of state.toolCalls.entries()) {
-    if (toolCall.turnId === turnId) {
-      state.toolCalls.delete(toolCallId);
-    }
-  }
-
-  if (state.currentTurnId === turnId) {
-    state.currentTurnId = null;
-  }
-  if (state.lastTurnId === turnId) {
-    state.lastTurnId = null;
-  }
-}
-
 function findLatestTranscriptEntry<TType extends BtwTranscriptEntry["type"]>(
   state: BtwTranscriptState,
   turnId: number,
@@ -1186,6 +1215,8 @@ function getCompletedExchangeCount(entries: BtwTranscript): number {
 function buildOverlayTranscript(
   entries: BtwTranscript,
   theme: ExtensionContext["ui"]["theme"],
+  markdownTheme: MarkdownTheme,
+  contentWidth: number,
 ): string[] {
   if (entries.length === 0) {
     return [theme.fg("dim", "No BTW thread yet. Ask a side question to start one.")];
@@ -1197,8 +1228,17 @@ function buildOverlayTranscript(
   const toolBadge = buildTranscriptBadge(theme, "Tool", "toolPendingBg", "warning");
   const assistantBadge = buildTranscriptBadge(theme, "Assistant", "customMessageBg", "success");
   const separator = theme.fg("borderMuted", "────────────────────────────────────────");
-  const blockIndent = "    ";
+  const blockIndent = BTW_BLOCK_INDENT;
   const resultIndent = blockIndent;
+
+  const pushMarkdownBlock = (header: string, markdown: Markdown) => {
+    pushBlankLine();
+    lines.push(header);
+    for (const line of markdown.render(Math.max(1, contentWidth))) {
+      const trimmed = line.replace(/\s+$/u, "");
+      lines.push(trimmed ? `${blockIndent}${trimmed}` : "");
+    }
+  };
 
   const pushBlankLine = () => {
     if (lines.length > 0 && lines[lines.length - 1] !== "") {
@@ -1264,9 +1304,13 @@ function buildOverlayTranscript(
       const thinkingHeader = entry.streaming
         ? `${thinkingBadge} ${theme.fg("warning", "▍")}`
         : thinkingBadge;
-      pushStackedBlock(thinkingHeader, entry.text, {
-        style: (line) => theme.fg("warning", theme.italic(line)),
-      });
+      pushMarkdownBlock(
+        thinkingHeader,
+        new Markdown(entry.text, 0, 0, markdownTheme, {
+          color: (text: string) => theme.fg("warning", text),
+          italic: true,
+        }),
+      );
       continue;
     }
 
@@ -1296,7 +1340,7 @@ function buildOverlayTranscript(
       const assistantHeader = entry.streaming
         ? `${assistantBadge} ${theme.fg("warning", "▍")}`
         : assistantBadge;
-      pushStackedBlock(assistantHeader, entry.text);
+      pushMarkdownBlock(assistantHeader, new Markdown(entry.text, 0, 0, markdownTheme));
     }
   }
 
@@ -1425,6 +1469,8 @@ function notify(
 
 /** Fixed overlay rows outside the transcript viewport (must match render() structure). */
 const BTW_OVERLAY_CHROME_LINES = 9;
+/** Indent applied to transcript block bodies. */
+const BTW_BLOCK_INDENT = "    ";
 
 function getOverlayTitle(mode: BtwThreadMode): string {
   return mode === "tangent" ? "BTW tangent" : "BTW";
@@ -1449,14 +1495,19 @@ class BtwOverlayComponent extends Container implements Focusable {
   private readonly readTranscriptEntries: () => BtwTranscript;
   private readonly getStatus: () => string | null;
   private readonly getMode: () => BtwThreadMode;
+  private readonly getWidthMode: () => BtwOverlayWidthMode;
   private readonly onSubmitCallback: (value: string) => void;
   private readonly onDismissCallback: () => void;
   private readonly onUnfocusCallback: () => void;
+  private readonly onToggleWidthCallback: () => void;
+  private readonly managesMouseReporting: boolean;
   private readonly tui: TUI;
   private readonly theme: ExtensionContext["ui"]["theme"];
+  private readonly markdownTheme: MarkdownTheme;
   private transcriptLines: string[] = [];
   private transcriptScrollOffset = 0;
   private transcriptViewportHeight = 8;
+  private contentWidth = 66;
   private followTranscript = true;
   private _focused = false;
   private modeTextValue = "";
@@ -1480,19 +1531,27 @@ class BtwOverlayComponent extends Container implements Focusable {
     readTranscriptEntries: () => BtwTranscript,
     getStatus: () => string | null,
     getMode: () => BtwThreadMode,
+    getWidthMode: () => BtwOverlayWidthMode,
     onSubmit: (value: string) => void,
     onDismiss: () => void,
     onUnfocus: () => void,
+    onToggleWidth: () => void,
   ) {
     super();
     this.tui = tui;
     this.theme = theme;
+    this.markdownTheme = getMarkdownTheme();
     this.readTranscriptEntries = readTranscriptEntries;
     this.getStatus = getStatus;
     this.getMode = getMode;
+    this.getWidthMode = getWidthMode;
     this.onSubmitCallback = onSubmit;
     this.onDismissCallback = onDismiss;
     this.onUnfocusCallback = onUnfocus;
+    this.onToggleWidthCallback = onToggleWidth;
+    // Fullscreen pi owns mouse reporting for the whole terminal session; only
+    // regular mode needs BTW to enable/disable it around the overlay.
+    this.managesMouseReporting = tui.mode !== "fullscreen";
 
     this.modeText = new Text("", 1, 0);
     this.summaryText = new Text("", 1, 0);
@@ -1511,7 +1570,9 @@ class BtwOverlayComponent extends Container implements Focusable {
     this.hintsText = new Text("", 1, 0);
 
     // Enable SGR mouse reporting so wheel/touchpad events reach handleInput().
-    this.tui.terminal?.write?.("\x1b[?1000h\x1b[?1006h");
+    if (this.managesMouseReporting) {
+      this.tui.terminal?.write?.("\x1b[?1000h\x1b[?1006h");
+    }
 
     const originalHandleInput = this.input.handleInput.bind(this.input);
     this.input.handleInput = (data: string) => {
@@ -1536,17 +1597,34 @@ class BtwOverlayComponent extends Container implements Focusable {
     this.refresh();
   }
 
+  /**
+   * Full-width mode drops the side bars and corners so a terminal Shift+drag
+   * selection captures only the dialog's own text.
+   */
+  private get borderless(): boolean {
+    return this.getWidthMode() === "full";
+  }
+
   private frameLine(content: string, innerWidth: number): string {
     const truncated = truncateToWidth(content, innerWidth, "");
     const padding = Math.max(0, innerWidth - visibleWidth(truncated));
+    if (this.borderless) {
+      return `${truncated}${" ".repeat(padding)}`;
+    }
     return `${this.theme.fg("border", "│")}${truncated}${" ".repeat(padding)}${this.theme.fg("border", "│")}`;
   }
 
   private ruleLine(innerWidth: number): string {
+    if (this.borderless) {
+      return this.theme.fg("border", "─".repeat(innerWidth));
+    }
     return this.theme.fg("border", `├${"─".repeat(innerWidth)}┤`);
   }
 
   private borderLine(innerWidth: number, edge: "top" | "bottom"): string {
+    if (this.borderless) {
+      return this.theme.fg("border", "─".repeat(innerWidth));
+    }
     const left = edge === "top" ? "┌" : "└";
     const right = edge === "top" ? "┐" : "┘";
     return this.theme.fg("border", `${left}${"─".repeat(innerWidth)}${right}`);
@@ -1578,7 +1656,9 @@ class BtwOverlayComponent extends Container implements Focusable {
   }
 
   dispose(): void {
-    this.tui.terminal?.write?.("\x1b[?1000l\x1b[?1006l");
+    if (this.managesMouseReporting) {
+      this.tui.terminal?.write?.("\x1b[?1000l\x1b[?1006l");
+    }
   }
 
   private getMouseScrollDelta(data: string): number | null {
@@ -1598,6 +1678,11 @@ class BtwOverlayComponent extends Container implements Focusable {
   handleInput(data: string): void {
     if (matchesBtwFocusShortcut(data)) {
       this.onUnfocusCallback();
+      return;
+    }
+
+    if (matchesKey(data, BTW_WIDTH_TOGGLE_SHORTCUT)) {
+      this.onToggleWidthCallback();
       return;
     }
 
@@ -1627,7 +1712,8 @@ class BtwOverlayComponent extends Container implements Focusable {
   }
 
   private inputFrameLine(dialogWidth: number): string {
-    const targetWidth = Math.max(1, dialogWidth - 2);
+    const borderColumns = this.borderless ? 0 : 2;
+    const targetWidth = Math.max(1, dialogWidth - borderColumns);
     const previousFocused = this.input.focused;
     // Input.render() emits CURSOR_MARKER when focused. In overlay mode that APC marker
     // can skew width/composition on this one row before the TUI strips it, producing a
@@ -1638,6 +1724,9 @@ class BtwOverlayComponent extends Container implements Focusable {
       const renderedInputLine = this.input.render(targetWidth)[0] ?? "";
       const inputLine = truncateToWidth(renderedInputLine, targetWidth, "");
       const padding = Math.max(0, targetWidth - visibleWidth(inputLine));
+      if (this.borderless) {
+        return `${inputLine}${" ".repeat(padding)}`;
+      }
       return `${this.theme.fg("border", "│")}${inputLine}${" ".repeat(padding)}${this.theme.fg("border", "│")}`;
     } finally {
       this.input.focused = previousFocused;
@@ -1650,7 +1739,13 @@ class BtwOverlayComponent extends Container implements Focusable {
 
   override render(width: number): string[] {
     const dialogWidth = Math.max(24, width);
-    const innerWidth = Math.max(22, dialogWidth - 2);
+    const innerWidth = Math.max(22, dialogWidth - (this.borderless ? 0 : 2));
+    // Markdown wraps itself, so the transcript must be rebuilt for the real width.
+    const contentWidth = Math.max(1, innerWidth - BTW_BLOCK_INDENT.length);
+    if (contentWidth !== this.contentWidth) {
+      this.contentWidth = contentWidth;
+      this.rebuildTranscriptLines();
+    }
     const transcriptLines = this.wrapTranscript(innerWidth);
     const dialogHeight = this.getDialogHeight();
     const chromeHeight = BTW_OVERLAY_CHROME_LINES;
@@ -1719,6 +1814,15 @@ class BtwOverlayComponent extends Container implements Focusable {
     return this.readTranscriptEntries().map((entry) => ({ ...entry }));
   }
 
+  private rebuildTranscriptLines(): void {
+    this.transcriptLines = buildOverlayTranscript(
+      this.readTranscriptEntries(),
+      this.theme,
+      this.markdownTheme,
+      this.contentWidth,
+    );
+  }
+
   refresh(): void {
     this.modeTextValue = `${getOverlayTitle(this.getMode())} · hidden thread preserved`;
     this.modeText.setText(this.modeTextValue);
@@ -1728,7 +1832,7 @@ class BtwOverlayComponent extends Container implements Focusable {
     this.summaryTextValue = `${exchanges} exchange${exchanges === 1 ? "" : "s"}${active}`;
     this.summaryText.setText(this.summaryTextValue);
 
-    this.transcriptLines = buildOverlayTranscript(entries, this.theme);
+    this.rebuildTranscriptLines();
     this.transcript.clear();
     for (const line of this.transcriptLines) {
       this.transcript.addChild(new Text(line, 1, 0));
@@ -1737,7 +1841,7 @@ class BtwOverlayComponent extends Container implements Focusable {
     const status = this.getStatus() ?? "Ready. Enter submits; Escape dismisses without clearing.";
     this.statusTextValue = status;
     this.statusText.setText(this.statusTextValue);
-    this.hintsTextValue = "Scroll wheel ↑↓ PgUp/PgDn · Enter · Alt+/ focus · Esc";
+    this.hintsTextValue = `Scroll wheel ↑↓ PgUp/PgDn · Enter · ${BTW_FOCUS_SHORTCUTS_LABEL} focus · Alt+w width · Esc`;
     this.hintsText.setText(this.hintsTextValue);
     this.tui.requestRender();
   }
@@ -1758,6 +1862,7 @@ export default function (pi: ExtensionAPI) {
   let transcriptState = createEmptyTranscriptState();
   let overlayStatus: string | null = null;
   let overlayDraft = "";
+  let overlayWidthMode: BtwOverlayWidthMode = "window";
   let overlayRuntime: OverlayRuntime | null = null;
   let lastUiContext: ExtensionContext | ExtensionCommandContext | null = null;
   let activeBtwSession: BtwSessionRuntime | null = null;
@@ -1801,6 +1906,33 @@ export default function (pi: ExtensionAPI) {
       handle.focus();
     }
     overlayRuntime?.refresh?.();
+  }
+
+  function getOverlayOptions(): OverlayOptions {
+    const base: OverlayOptions = {
+      minWidth: 72,
+      maxHeight: "78%",
+      anchor: "top-center",
+      nonCapturing: true,
+    };
+    return overlayWidthMode === "full"
+      ? { ...base, width: "100%", margin: { top: 1 } }
+      : { ...base, width: "78%", margin: { top: 1, left: 2, right: 2 } };
+  }
+
+  async function toggleOverlayWidth(
+    ctx: ExtensionContext | ExtensionCommandContext,
+  ): Promise<void> {
+    overlayWidthMode = overlayWidthMode === "window" ? "full" : "window";
+    // overlayOptions are fixed at open time, so reopen; close() keeps the draft.
+    dismissOverlay();
+    await ensureOverlay(ctx);
+    setOverlayStatus(
+      overlayWidthMode === "full"
+        ? "Full-width mode. Shift+drag now selects only the dialog. Alt+w to restore the window."
+        : "Window mode. Alt+w switches to full-width for clean copy selection.",
+      ctx,
+    );
   }
 
   function focusOverlay(): void {
@@ -1898,19 +2030,39 @@ export default function (pi: ExtensionAPI) {
     }
 
     clearBtwSessionSubscriptions(current);
-
-    try {
-      await current.session.abort();
-    } catch {
-      // Ignore abort errors during BTW session replacement/shutdown.
-    }
-
+    await requestBtwSessionAbort(current);
     current.session.dispose();
+  }
+
+  function requestBtwSessionAbort(sessionRuntime: BtwSessionRuntime): Promise<void> {
+    sessionRuntime.abortPromise ??= Promise.resolve()
+      .then(() => sessionRuntime.session.abort())
+      .catch(() => {
+        // Ignore abort errors during BTW cancellation/replacement/shutdown.
+      });
+    return sessionRuntime.abortPromise;
   }
 
   async function dismissOverlaySession(): Promise<void> {
     dismissOverlay();
     await disposeBtwSession();
+  }
+
+  /**
+   * Esc while streaming aborts the in-flight request (and drops queued
+   * follow-ups) but keeps the overlay open with the partial transcript; a
+   * second Esc, or Esc while idle, dismisses.
+   */
+  async function dismissOrAbortOverlaySession(): Promise<void> {
+    const sessionRuntime = activeBtwSession;
+    if (sessionRuntime?.session.isStreaming && !sessionRuntime.abortPromise) {
+      btwQueue = [];
+      setOverlayStatus("⏹ Aborting. Press Esc again to dismiss the BTW overlay.");
+      await requestBtwSessionAbort(sessionRuntime);
+      sessionRuntime.abortPromise = undefined;
+      return;
+    }
+    await dismissOverlaySession();
   }
 
   async function resolveBtwModel(
@@ -2276,7 +2428,8 @@ export default function (pi: ExtensionAPI) {
       if (activeBtwSession) {
         clearBtwSessionSubscriptions(activeBtwSession);
       }
-      runtime.handle?.hide();
+      // done() (via finish) hides the overlay and disposes the component;
+      // hiding here too would close whatever overlay sits underneath.
       if (overlayRuntime === runtime) {
         overlayRuntime = null;
       }
@@ -2300,15 +2453,19 @@ export default function (pi: ExtensionAPI) {
             () => transcriptState.entries,
             () => overlayStatus,
             () => pendingMode,
+            () => overlayWidthMode,
             (value) => {
               void submitFromOverlay(ctx, value);
             },
             () => {
-              void dismissOverlaySession();
+              void dismissOrAbortOverlaySession();
             },
             () => {
               overlayRuntime?.handle?.unfocus();
               overlayRuntime?.refresh?.();
+            },
+            () => {
+              void toggleOverlayWidth(ctx);
             },
           );
 
@@ -2323,7 +2480,6 @@ export default function (pi: ExtensionAPI) {
           };
           runtime.close = () => {
             overlayDraft = overlay.getDraft();
-            overlay.dispose();
             closeRuntime();
           };
 
@@ -2337,14 +2493,7 @@ export default function (pi: ExtensionAPI) {
         },
         {
           overlay: true,
-          overlayOptions: {
-            width: "78%",
-            minWidth: 72,
-            maxHeight: "78%",
-            anchor: "top-center",
-            margin: { top: 1, left: 2, right: 2 },
-            nonCapturing: true,
-          },
+          overlayOptions: getOverlayOptions(),
           onHandle: (handle) => {
             runtime.handle = handle;
             handle.focus();
@@ -2931,11 +3080,12 @@ export default function (pi: ExtensionAPI) {
         throw new Error("BTW request finished without a response.");
       }
       if (response.stopReason === "aborted") {
-        removeTranscriptTurn(
+        // ponytail: aborted turns still count toward the exchange counter; track turn outcomes if that matters.
+        finishTranscriptTurn(
           transcriptState,
-          transcriptState.lastTurnId ?? transcriptState.currentTurnId,
+          transcriptState.currentTurnId ?? transcriptState.lastTurnId,
         );
-        setOverlayStatus("Request aborted.", ctx);
+        setOverlayStatus("⏹ Aborted. Press Esc again to dismiss the BTW overlay.", ctx);
         return;
       }
       if (response.stopReason === "error") {
@@ -3077,7 +3227,14 @@ export default function (pi: ExtensionAPI) {
     const details = message.details as BtwDetails | undefined;
     const content =
       typeof message.content === "string" ? message.content : "[non-text btw message]";
-    const lines = [theme.fg("accent", theme.bold("[BTW]")), content];
+    const box = new Box(1, 1, (text) => theme.bg("customMessageBg", text));
+    box.addChild(new Text(theme.fg("accent", theme.bold("[BTW]")), 0, 0));
+    box.addChild(
+      new Markdown(content, 0, 0, getMarkdownTheme(), {
+        color: (text: string) => theme.fg("customMessageText", text),
+      }),
+    );
+    const lines: string[] = [];
 
     if (expanded && details) {
       lines.push(
@@ -3097,8 +3254,9 @@ export default function (pi: ExtensionAPI) {
       }
     }
 
-    const box = new Box(1, 1, (text) => theme.bg("customMessageBg", text));
-    box.addChild(new Text(lines.join("\n"), 0, 0));
+    if (lines.length > 0) {
+      box.addChild(new Text(lines.join("\n"), 0, 0));
+    }
     return box;
   });
 

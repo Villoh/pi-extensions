@@ -4,6 +4,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   BTW_SUB_SESSION_TOOL_SET,
+  describeFocusShortcuts,
+  resolveBtwFocusShortcuts,
   stripForeignToolActivity,
   withoutParentToolDeclarations,
 } from "./btw.ts";
@@ -106,4 +108,15 @@ test("strips parent tool declarations from system messages only", () => {
   assert.deepEqual(withoutParentToolDeclarations(system), { role: "system", content: "x" });
   const user = { role: "user", content: [], toolsAdded: ["keep"] };
   assert.equal(withoutParentToolDeclarations(user), user);
+});
+
+test("PI_BTW_FOCUS_KEYS replaces defaults, drops invalid ids, falls back when empty", () => {
+  const defaults = resolveBtwFocusShortcuts({});
+  assert.deepEqual(defaults, ["alt+/", "super+/", "ctrl+alt+w"]);
+  assert.deepEqual(
+    resolveBtwFocusShortcuts({ PI_BTW_FOCUS_KEYS: " Ctrl+/, cmd+x, ctrl+alt+b ,ctrl+/" }),
+    ["ctrl+/", "ctrl+alt+b"],
+  );
+  assert.deepEqual(resolveBtwFocusShortcuts({ PI_BTW_FOCUS_KEYS: "nope,," }), defaults);
+  assert.equal(describeFocusShortcuts(defaults), "Alt+/, Super+/ or Ctrl+Alt+W");
 });
