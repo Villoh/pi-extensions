@@ -15,7 +15,7 @@ A small pi extension that adds a `/btw` side conversation channel.
 - keeps a continuous BTW thread by default
 - supports `/btw tangent` for a contextless side thread that does not inherit the current main-session conversation
 - opens a focused BTW modal shell with its own composer and transcript
-- keeps the BTW overlay open while you switch focus back to the main editor with `Alt+/`
+- keeps the BTW overlay open while you switch focus back to the main editor with `Alt+/`, `Super+/`, or `Ctrl+Alt+W` (remappable)
 - keeps BTW thread entries out of the main agent's future context
 - supports BTW-only model and thinking overrides without changing the main thread settings
 - lets you inject the full thread, or a summary of it, back into the main agent
