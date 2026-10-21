@@ -6,6 +6,7 @@ import {
   BTW_READONLY_TOOLS,
   BTW_SUB_SESSION_TOOL_SET,
   describeFocusShortcuts,
+  getBtwCompletions,
   resolveBtwFocusShortcuts,
   resolveBtwToolNames,
   stripForeignToolActivity,
@@ -128,4 +129,24 @@ test("readonly mode always uses the fixed read-only tools, ignoring configured t
   assert.deepEqual(resolveBtwToolNames(configured, "readonly"), [...BTW_READONLY_TOOLS]);
   assert.deepEqual(resolveBtwToolNames(configured, "contextual"), configured.tools);
   assert.ok(!BTW_READONLY_TOOLS.some((tool) => ["bash", "edit", "write"].includes(tool)));
+});
+
+test("composer completion: / offers btw and side, /btw offers subcommands, other input none", () => {
+  assert.deepEqual(
+    getBtwCompletions("/").map((c) => c.label),
+    ["/btw", "/side"],
+  );
+  assert.deepEqual(
+    getBtwCompletions("/si").map((c) => c.label),
+    ["/side"],
+  );
+  const sub = getBtwCompletions("/btw re");
+  assert.deepEqual(
+    sub.map((c) => c.label),
+    ["readonly", "resume"],
+  );
+  assert.equal(sub[0].insert, "/btw readonly ");
+  assert.deepEqual(getBtwCompletions("/btw ask what"), []);
+  assert.deepEqual(getBtwCompletions("/help"), []);
+  assert.deepEqual(getBtwCompletions("hello"), []);
 });

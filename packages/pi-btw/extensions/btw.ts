@@ -493,6 +493,35 @@ function getBtwArgumentCompletions(argumentPrefix: string) {
   return filtered.length > 0 ? [...filtered] : null;
 }
 
+type BtwCompletion = { insert: string; label: string; description: string };
+
+/**
+ * Composer slash completion: `/` offers the `/btw` and `/side` entries, and
+ * `/btw ` (or `/side `) offers the subcommands. Any other slash input is left
+ * alone because it is routed to the sub-session as a normal prompt.
+ */
+export function getBtwCompletions(value: string): BtwCompletion[] {
+  const entry = value.match(/^\/([^\s]*)$/);
+  if (entry) {
+    return [
+      { insert: "/btw ", label: "/btw", description: "Ask or manage the BTW thread" },
+      { insert: "/side ", label: "/side", description: "Alias for /btw" },
+    ].filter((item) => item.label.startsWith(`/${entry[1].toLowerCase()}`));
+  }
+
+  const sub = value.match(/^\/(btw|side)\s+([^\s]*)$/i);
+  if (!sub) {
+    return [];
+  }
+  return BTW_COMMAND_ARGUMENTS.filter((item) => item.value.startsWith(sub[2].toLowerCase())).map(
+    (item) => ({
+      insert: `/${sub[1]} ${item.value} `,
+      label: item.value,
+      description: item.description,
+    }),
+  );
+}
+
 function parseBtwCommand(args: string): { name: string; args: string } {
   const trimmed = args.trim();
   const match = trimmed.match(/^(\S+)(?:\s+([\s\S]*))?$/);
@@ -1558,6 +1587,12 @@ class BtwOverlayComponent extends Container implements Focusable {
   private summaryTextValue = "";
   private statusTextValue = "";
   private hintsTextValue = "";
+  private readonly keybindings: KeybindingsManager;
+  private readonly handleRawInput: (data: string) => void;
+  private completionQuery = "";
+  private completionDismissedFor: string | null = null;
+  private completionItems: BtwCompletion[] = [];
+  private completionIndex = 0;
 
   get focused(): boolean {
     return this._focused;
@@ -1596,6 +1631,7 @@ class BtwOverlayComponent extends Container implements Focusable {
     // Fullscreen pi owns mouse reporting for the whole terminal session; only
     // regular mode needs BTW to enable/disable it around the overlay.
     this.managesMouseReporting = tui.mode !== "fullscreen";
+    this.keybindings = keybindings;
 
     this.modeText = new Text("", 1, 0);
     this.summaryText = new Text("", 1, 0);
@@ -1619,11 +1655,11 @@ class BtwOverlayComponent extends Container implements Focusable {
     }
 
     const originalHandleInput = this.input.handleInput.bind(this.input);
+    this.handleRawInput = originalHandleInput;
     this.input.handleInput = (data: string) => {
       if (keybindings.matches(data, "app.clear")) {
         if (this.input.getValue().length > 0) {
-          this.input.setValue("");
-          this.tui.requestRender();
+          this.setDraft("");
           return;
         }
 
@@ -1636,9 +1672,62 @@ class BtwOverlayComponent extends Container implements Focusable {
         return;
       }
       originalHandleInput(data);
+      this.updateCompletions();
+      this.tui.requestRender();
     };
 
     this.refresh();
+  }
+
+  private updateCompletions(): void {
+    const value = this.input.getValue();
+    if (value !== this.completionQuery) {
+      this.completionQuery = value;
+      this.completionIndex = 0;
+      this.completionDismissedFor = null;
+    }
+    this.completionItems = value === this.completionDismissedFor ? [] : getBtwCompletions(value);
+  }
+
+  /** Returns true when the key was consumed by the completion list. */
+  private handleCompletionInput(data: string): boolean {
+    this.updateCompletions();
+    if (this.completionItems.length === 0) {
+      return false;
+    }
+
+    const count = this.completionItems.length;
+    if (matchesKey(data, Key.up) || matchesKey(data, Key.down)) {
+      const delta = matchesKey(data, Key.up) ? -1 : 1;
+      this.completionIndex = (this.completionIndex + delta + count) % count;
+    } else if (matchesKey(data, Key.tab) || matchesKey(data, Key.enter)) {
+      const selected = this.completionItems[this.completionIndex];
+      // Enter on an already-complete subcommand submits instead of re-completing.
+      if (matchesKey(data, Key.enter) && selected.insert.trim() === this.input.getValue().trim()) {
+        return false;
+      }
+      this.setDraft(selected.insert);
+    } else if (this.keybindings.matches(data, "tui.select.cancel")) {
+      this.completionDismissedFor = this.input.getValue();
+      this.completionItems = [];
+    } else {
+      return false;
+    }
+
+    this.tui.requestRender();
+    return true;
+  }
+
+  private completionRows(): string[] {
+    this.updateCompletions();
+    const start = Math.max(0, Math.min(this.completionIndex - 4, this.completionItems.length - 5));
+    return this.completionItems.slice(start, start + 5).map((item, index) => {
+      const selected = start + index === this.completionIndex;
+      return this.theme.fg(
+        selected ? "accent" : "dim",
+        `${selected ? "→" : " "} ${item.label}  ${item.description}`,
+      );
+    });
   }
 
   /**
@@ -1736,6 +1825,10 @@ class BtwOverlayComponent extends Container implements Focusable {
       return;
     }
 
+    if (this.handleCompletionInput(data)) {
+      return;
+    }
+
     if (matchesKey(data, Key.pageUp) || matchesKey(data, Key.up)) {
       const step = matchesKey(data, Key.pageUp)
         ? Math.max(1, this.transcriptViewportHeight - 1)
@@ -1793,7 +1886,8 @@ class BtwOverlayComponent extends Container implements Focusable {
     const transcriptLines = this.wrapTranscript(innerWidth);
     const dialogHeight = this.getDialogHeight();
     const chromeHeight = BTW_OVERLAY_CHROME_LINES;
-    const transcriptHeight = Math.max(6, dialogHeight - chromeHeight);
+    const completionRows = this.completionRows();
+    const transcriptHeight = Math.max(1, dialogHeight - chromeHeight - completionRows.length);
     this.transcriptViewportHeight = transcriptHeight;
 
     const maxScroll = Math.max(0, transcriptLines.length - transcriptHeight);
@@ -1838,6 +1932,9 @@ class BtwOverlayComponent extends Container implements Focusable {
 
     lines.push(this.ruleLine(innerWidth));
     lines.push(this.frameLine(this.theme.fg("warning", this.statusTextValue.trim()), innerWidth));
+    for (const row of completionRows) {
+      lines.push(this.frameLine(row, innerWidth));
+    }
     lines.push(this.inputFrameLine(dialogWidth));
     lines.push(this.frameLine(this.theme.fg("dim", this.hintsTextValue.trim()), innerWidth));
     lines.push(this.borderLine(innerWidth, "bottom"));
@@ -1846,7 +1943,13 @@ class BtwOverlayComponent extends Container implements Focusable {
   }
 
   setDraft(value: string): void {
-    this.input.setValue(value);
+    // Input.setValue keeps the old cursor; pasting into an empty input leaves
+    // it after the inserted text (e.g. after a completed command's trailing space).
+    this.input.setValue("");
+    if (value) {
+      this.handleRawInput(`\x1b[200~${value}\x1b[201~`);
+    }
+    this.updateCompletions();
     this.tui.requestRender();
   }
 
@@ -1885,7 +1988,7 @@ class BtwOverlayComponent extends Container implements Focusable {
     const status = this.getStatus() ?? "Ready. Enter submits; Escape dismisses without clearing.";
     this.statusTextValue = status;
     this.statusText.setText(this.statusTextValue);
-    this.hintsTextValue = `Scroll wheel ↑↓ PgUp/PgDn · Enter · ${BTW_FOCUS_SHORTCUTS_LABEL} focus · Alt+w width · Esc`;
+    this.hintsTextValue = `Scroll wheel ↑↓ PgUp/PgDn · Tab complete · Enter · ${BTW_FOCUS_SHORTCUTS_LABEL} focus · Alt+w width · Esc`;
     this.hintsText.setText(this.hintsTextValue);
     this.tui.requestRender();
   }
@@ -2926,7 +3029,7 @@ export default function (pi: ExtensionAPI) {
 
   function parseOverlayBtwCommand(value: string): { name: string; args: string } | null {
     const trimmed = value.trim();
-    const match = trimmed.match(/^\/btw(?::([^\s]+)|\s+([^\s]+))?(?:\s+([\s\S]*))?$/i);
+    const match = trimmed.match(/^\/(?:btw|side)(?::([^\s]+)|\s+([^\s]+))?(?:\s+([\s\S]*))?$/i);
     if (!match) {
       return null;
     }

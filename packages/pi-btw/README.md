@@ -96,6 +96,7 @@ When the thread has more than one exchange, `/btw inject` and `/btw summarize` n
 
 - `Alt+/`, `Super+/`, or `Ctrl+Alt+W` toggles focus between BTW and the main editor without closing the overlay (`Super+/` needs a terminal that reports Super, e.g. via the Kitty keyboard protocol)
 - set `PI_BTW_FOCUS_KEYS` to a comma-separated list of pi-tui key ids (e.g. `PI_BTW_FOCUS_KEYS="ctrl+/,ctrl+alt+b"`) to replace those focus keys; invalid entries are ignored and the defaults are kept if none are usable
+- typing `/` in the composer lists `/btw` and `/side`; after `/btw ` it lists the subcommands. Navigate with `Up`/`Down`, accept with `Tab` (or `Enter` on a partial match), dismiss the list with `Esc`. Other slash input is still sent to the sub-session as a normal prompt
 - `Alt+w` toggles between the framed window layout and a full-width layout without side borders, so terminal Shift+drag selection captures only the dialog's text
 - while BTW is streaming, the first `Esc` aborts the request (and drops queued follow-ups) and keeps the partial transcript visible; press `Esc` again to dismiss
 - while BTW is idle, `Esc` dismisses the overlay immediately
