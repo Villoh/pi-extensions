@@ -45,7 +45,12 @@ import {
   visibleWidth,
   wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
-import { loadBtwExtensionResources, readBtwExtensionSources } from "./btw-extension-tools.ts";
+import {
+  loadBtwExtensionResources,
+  readBtwExtensionSources,
+  readBtwWorkspaceMode,
+} from "./btw-extension-tools.ts";
+import { type BtwSshWorkspace, createBtwSshWorkspace } from "./btw-ssh-workspace.ts";
 
 const BTW_MESSAGE_TYPE = "btw-note";
 const BTW_ENTRY_TYPE = "btw-thread-entry";
@@ -222,6 +227,8 @@ type BtwDetails = {
   thinkingLevel: SessionThinkingLevel;
   timestamp: number;
   usage?: AssistantMessage["usage"];
+  /** Where the thread's tools ran (`local:<cwd>` or `ssh:<session>`); a thread can't move between workspaces. */
+  workspaceIdentity?: string;
 };
 
 type ParsedBtwArgs = {
@@ -325,6 +332,9 @@ type BtwSessionRuntime = {
   abortPromise?: Promise<void>;
   /** True when the child loaded `btw.json` extensions and must be shut down through them. */
   hasExtensions: boolean;
+  /** Set for SSH workspaces; owns its own connection and must be disposed with the child. */
+  workspace?: BtwSshWorkspace;
+  workspaceIdentity: string;
 };
 
 type OverlayRuntime = {
@@ -364,6 +374,7 @@ function createBtwResourceLoader(
   tools: readonly string[] | (() => readonly string[]),
   appendSystemPrompt: string[] = [BTW_SYSTEM_PROMPT],
   extensionResources?: ResourceLoader,
+  workspaceLabel = `local ${ctx.cwd}`,
 ): ResourceLoader {
   // Nothing from the parent is loaded into BTW children. The only extensions
   // are the explicit `btw.json` allowlist, resolved by loadBtwExtensionResources.
@@ -379,7 +390,7 @@ function createBtwResourceLoader(
     const available = typeof tools === "function" ? tools() : tools;
     return [
       "<btw_capabilities>",
-      `Working directory for built-in file and shell tools: ${ctx.cwd}.`,
+      `Workspace for built-in file and shell tools: ${workspaceLabel}.`,
       available.length > 0
         ? `Available tools in this BTW session: ${available.join(", ")}.`
         : "No tools are available in this BTW session.",
@@ -1626,6 +1637,7 @@ class BtwOverlayComponent extends Container implements Focusable {
   private readonly onDismissCallback: () => void;
   private readonly onUnfocusCallback: () => void;
   private readonly onToggleWidthCallback: () => void;
+  private readonly getWorkspaceLabel: () => string | undefined;
   private readonly managesMouseReporting: boolean;
   private readonly tui: TUI;
   private readonly theme: ExtensionContext["ui"]["theme"];
@@ -1668,8 +1680,10 @@ class BtwOverlayComponent extends Container implements Focusable {
     onDismiss: () => void,
     onUnfocus: () => void,
     onToggleWidth: () => void,
+    getWorkspaceLabel: () => string | undefined = () => undefined,
   ) {
     super();
+    this.getWorkspaceLabel = getWorkspaceLabel;
     this.tui = tui;
     this.theme = theme;
     this.markdownTheme = getMarkdownTheme();
@@ -2024,7 +2038,8 @@ class BtwOverlayComponent extends Container implements Focusable {
   }
 
   refresh(): void {
-    this.modeTextValue = `${getOverlayTitle(this.getMode())} · hidden thread preserved`;
+    const workspaceLabel = this.getWorkspaceLabel();
+    this.modeTextValue = `${getOverlayTitle(this.getMode())}${workspaceLabel ? ` · ${workspaceLabel}` : ""} · hidden thread preserved`;
     this.modeText.setText(this.modeTextValue);
     const entries = this.readTranscriptEntries();
     const exchanges = getCompletedExchangeCount(entries);
@@ -2231,16 +2246,24 @@ export default function (pi: ExtensionAPI) {
 
     clearBtwSessionSubscriptions(current);
     await requestBtwSessionAbort(current);
-    await disposeChildSession(current.session, current.hasExtensions);
+    await disposeChildSession(current.session, current.hasExtensions, current.workspace);
   }
 
-  async function disposeChildSession(session: AgentSession, hasExtensions: boolean): Promise<void> {
+  async function disposeChildSession(
+    session: AgentSession,
+    hasExtensions: boolean,
+    workspace?: BtwSshWorkspace,
+  ): Promise<void> {
     try {
       if (hasExtensions) {
         await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
       }
     } finally {
-      session.dispose();
+      try {
+        session.dispose();
+      } finally {
+        await workspace?.dispose();
+      }
     }
   }
 
@@ -2610,24 +2633,63 @@ export default function (pi: ExtensionAPI) {
           })
         : undefined;
 
-    let childSession: AgentSession | undefined;
-    const { session } = await createAgentSession({
+    // workspace: "ssh" runs the child's file/shell tools on the parent's remote
+    // host over its own connection. It never falls back to local tools.
+    const workspaceMode = await readBtwWorkspaceMode({
       cwd: ctx.cwd,
-      sessionManager,
-      model: settings.model,
-      modelRuntime: getModelRuntime(ctx),
-      thinkingLevel: settings.thinkingLevel,
-      // Built-ins default to pi's coding-agent toolset (read/bash/edit/write),
-      // overridable via /btw config. With extensions the tool registry must stay
-      // live for their tools, so the built-in allowlist is applied afterwards.
-      ...(extensionResources ? { noTools: "builtin" as const } : { tools: toolNames }),
-      resourceLoader: createBtwResourceLoader(
-        ctx,
-        () => childSession?.getActiveToolNames() ?? toolNames,
-        mode === "readonly" ? [BTW_SYSTEM_PROMPT, BTW_READONLY_PROMPT] : [BTW_SYSTEM_PROMPT],
-        extensionResources,
-      ),
+      agentDir,
+      projectTrusted: ctx.isProjectTrusted(),
     });
+    const workspace =
+      workspaceMode === "ssh"
+        ? await createBtwSshWorkspace(pi, ctx, mode === "readonly")
+        : undefined;
+    const workspaceIdentity = workspace?.identity ?? `local:${ctx.cwd}`;
+    if (
+      pendingThread.some(
+        (entry) => (entry.workspaceIdentity ?? `local:${ctx.cwd}`) !== workspaceIdentity,
+      )
+    ) {
+      await workspace?.dispose();
+      throw new Error(
+        "BTW workspace differs from its saved thread. Run /btw clear before continuing.",
+      );
+    }
+
+    // A remote workspace only provides some tools. Any other configured
+    // built-in (e.g. a local `grep`) would silently run on this machine.
+    const builtinToolNames = workspace
+      ? toolNames.filter((name) => workspace.tools.some((tool) => tool.name === name))
+      : toolNames;
+
+    let childSession: AgentSession | undefined;
+    let created: Awaited<ReturnType<typeof createAgentSession>>;
+    try {
+      created = await createAgentSession({
+        cwd: ctx.cwd,
+        sessionManager,
+        model: settings.model,
+        modelRuntime: getModelRuntime(ctx),
+        thinkingLevel: settings.thinkingLevel,
+        // Same-named custom tools replace the built-ins, which is how the SSH tools take over.
+        ...(workspace ? { customTools: workspace.tools } : {}),
+        // Built-ins default to pi's coding-agent toolset (read/bash/edit/write),
+        // overridable via /btw config. With extensions the tool registry must stay
+        // live for their tools, so the built-in allowlist is applied afterwards.
+        ...(extensionResources ? { noTools: "builtin" as const } : { tools: builtinToolNames }),
+        resourceLoader: createBtwResourceLoader(
+          ctx,
+          () => childSession?.getActiveToolNames() ?? builtinToolNames,
+          mode === "readonly" ? [BTW_SYSTEM_PROMPT, BTW_READONLY_PROMPT] : [BTW_SYSTEM_PROMPT],
+          extensionResources,
+          workspace?.label,
+        ),
+      });
+    } catch (error) {
+      await workspace?.dispose();
+      throw error;
+    }
+    const { session } = created;
     childSession = session;
 
     const hasExtensions = !!extensionResources;
@@ -2646,7 +2708,7 @@ export default function (pi: ExtensionAPI) {
             extensionToolNames.add(name);
           }
         }
-        session.setActiveToolsByName([...toolNames, ...extensionToolNames]);
+        session.setActiveToolsByName([...builtinToolNames, ...extensionToolNames]);
 
         const startupErrors: string[] = [];
         let starting = true;
@@ -2668,13 +2730,21 @@ export default function (pi: ExtensionAPI) {
         try {
           await session.abort();
         } finally {
-          await disposeChildSession(session, true);
+          await disposeChildSession(session, true, workspace);
         }
         throw error;
       }
     }
 
-    return { session, mode, subscriptions: new Set(), sideThreadStartIndex, hasExtensions };
+    return {
+      session,
+      mode,
+      subscriptions: new Set(),
+      sideThreadStartIndex,
+      hasExtensions,
+      workspace,
+      workspaceIdentity,
+    };
   }
 
   async function ensureBtwSession(
@@ -2687,11 +2757,28 @@ export default function (pi: ExtensionAPI) {
     }
 
     if (activeBtwSession?.mode === mode) {
+      try {
+        // An SSH child is only valid while the parent stays on the same remote.
+        activeBtwSession.workspace?.assertCurrent();
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        setOverlayStatus(message, ctx);
+        notify(ctx, message, "error");
+        return null;
+      }
       return activeBtwSession;
     }
 
     await disposeBtwSession();
-    activeBtwSession = await createBtwSubSession(ctx, mode);
+    try {
+      activeBtwSession = await createBtwSubSession(ctx, mode);
+    } catch (error) {
+      // e.g. SSH connection failure or a workspace mismatch with the saved thread.
+      const message = `Could not start BTW session: ${error instanceof Error ? error.message : String(error)}`;
+      setOverlayStatus(message, ctx);
+      notify(ctx, message, "error");
+      return null;
+    }
     return activeBtwSession;
   }
 
@@ -2755,6 +2842,7 @@ export default function (pi: ExtensionAPI) {
             () => {
               void toggleOverlayWidth(ctx);
             },
+            () => activeBtwSession?.workspace?.label,
           );
 
           overlay.focused = runtime.handle?.isFocused() ?? true;
@@ -3386,10 +3474,10 @@ export default function (pi: ExtensionAPI) {
       return;
     }
 
+    // A model is guaranteed above, so null means the session couldn't start
+    // (ensureBtwSession already reported why).
     const sessionRuntime = await ensureBtwSession(ctx, mode);
     if (!sessionRuntime) {
-      setOverlayStatus("No active model selected.", ctx);
-      notify(ctx, "No active model selected.", "error");
       return;
     }
 
@@ -3403,6 +3491,7 @@ export default function (pi: ExtensionAPI) {
     await ensureOverlay(ctx);
 
     try {
+      sessionRuntime.workspace?.assertCurrent();
       await session.prompt(question, { source: "extension" });
 
       const response = getLastAssistantMessage(session);
@@ -3440,6 +3529,7 @@ export default function (pi: ExtensionAPI) {
         thinkingLevel,
         timestamp: Date.now(),
         usage: response.usage,
+        workspaceIdentity: sessionRuntime.workspaceIdentity,
       };
 
       if (pendingResumeCatchUp.length > 0) {
