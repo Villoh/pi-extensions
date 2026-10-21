@@ -17,7 +17,8 @@
     "directory": "packages/pi-btw"
   },
   "scripts": {
-    "test": "node --experimental-strip-types --test extensions/btw.test.ts extensions/btw-extension-tools.test.ts"
+    "check": "tsc --noEmit",
+    "test": "node --experimental-strip-types --test extensions/btw.test.ts extensions/btw-extension-tools.test.ts extensions/btw.sdk.test.ts"
   },
   "keywords": [
     "pi-package",

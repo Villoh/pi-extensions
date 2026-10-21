@@ -4,6 +4,13 @@ on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    # Weekly, to catch breakage from new Pi releases.
+    - cron: "0 14 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   check:
@@ -16,3 +23,30 @@ jobs:
       - run: npm install
       - run: npm run check
       - run: npm run test
+
+  # pi-btw drives the real Pi SDK, so test it against the Pi it is developed
+  # on (locked), the oldest it claims to support, and the newest release.
+  pi-btw-compat:
+    runs-on: ubuntu-latest
+    name: pi-btw on Pi ${{ matrix.pi }}
+    strategy:
+      fail-fast: false
+      matrix:
+        pi: [locked, minimum, latest]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - run: npm ci
+      - name: Install Pi ${{ matrix.pi }}
+        if: matrix.pi != 'locked'
+        env:
+          PI_VERSION: ${{ matrix.pi == 'minimum' && '0.85.1' || 'latest' }}
+        run: >-
+          npm install --no-save -w packages/pi-btw
+          "@earendil-works/pi-ai@$PI_VERSION"
+          "@earendil-works/pi-coding-agent@$PI_VERSION"
+          "@earendil-works/pi-tui@$PI_VERSION"
+      - run: npm run test -w packages/pi-btw
+      - run: npm run check -w packages/pi-btw
