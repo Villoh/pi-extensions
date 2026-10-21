@@ -20,8 +20,11 @@ A small pi extension that adds a `/btw` side conversation channel.
 - supports BTW-only model and thinking overrides without changing the main thread settings
 - lets you inject the full thread, or a summary of it, back into the main agent
 - optionally saves an individual BTW exchange as a visible session note with `--save`
+- on RPC/SDK hosts (no TUI overlay), answers are shown as visible session notes and the question must be passed inline
 
 ## Install
+
+Supports Pi 0.85.1 through 1.x (type-checked against 0.85.1, 0.99.2 and 1.3.0).
 
 From npm:
 
