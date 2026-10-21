@@ -7,6 +7,7 @@ import {
   BTW_SUB_SESSION_TOOL_SET,
   describeFocusShortcuts,
   getBtwCompletions,
+  getCompletedExchangeCount,
   resolveBtwFocusShortcuts,
   resolveBtwToolNames,
   stripForeignToolActivity,
@@ -149,4 +150,18 @@ test("composer completion: / offers btw and side, /btw offers subcommands, other
   assert.deepEqual(getBtwCompletions("/btw ask what"), []);
   assert.deepEqual(getBtwCompletions("/help"), []);
   assert.deepEqual(getBtwCompletions("hello"), []);
+});
+
+test("only completed turns count as exchanges (aborted, failed and unfinished turns do not)", () => {
+  const turn = (turnId, outcome) => [
+    { turnId, type: "turn-boundary", phase: "start" },
+    { turnId, type: "assistant-text", text: "answer", streaming: false },
+    ...(outcome === "unfinished"
+      ? []
+      : [{ turnId, type: "turn-boundary", phase: "end", ...(outcome ? { outcome } : {}) }]),
+  ];
+  assert.equal(getCompletedExchangeCount([...turn(1, "completed"), ...turn(2)]), 2);
+  assert.equal(getCompletedExchangeCount([...turn(1, "completed"), ...turn(2, "aborted")]), 1);
+  assert.equal(getCompletedExchangeCount([...turn(1, "failed"), ...turn(2, "unfinished")]), 0);
+  assert.equal(getCompletedExchangeCount([]), 0);
 });

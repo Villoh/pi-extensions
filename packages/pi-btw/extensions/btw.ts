@@ -260,12 +260,16 @@ type ResolvedBtwSettings = {
   fallbackReason?: string;
 };
 
+/** How a turn ended; only completed turns count as exchanges. */
+type BtwTurnOutcome = "completed" | "aborted" | "failed";
+
 type BtwTranscriptEntry =
   | {
       id: number;
       turnId: number;
       type: "turn-boundary";
       phase: "start" | "end";
+      outcome?: BtwTurnOutcome;
     }
   | { id: number; turnId: number; type: "user-message"; text: string }
   | {
@@ -917,21 +921,30 @@ function ensureTranscriptTurn(state: BtwTranscriptState): number {
   return turnId;
 }
 
-function finishTranscriptTurn(state: BtwTranscriptState, turnId?: number | null): void {
+function finishTranscriptTurn(
+  state: BtwTranscriptState,
+  turnId?: number | null,
+  outcome: BtwTurnOutcome = "completed",
+): void {
   const resolvedTurnId = turnId ?? state.currentTurnId;
   if (resolvedTurnId === null || resolvedTurnId === undefined) {
     return;
   }
 
-  const hasEndBoundary = state.entries.some(
-    (entry) =>
+  // The turn_end event can close a turn before runBtw learns it was aborted or
+  // failed, so an existing end boundary takes the more specific outcome.
+  const endBoundary = state.entries.find(
+    (entry): entry is Extract<BtwTranscriptEntry, { type: "turn-boundary" }> =>
       entry.turnId === resolvedTurnId && entry.type === "turn-boundary" && entry.phase === "end",
   );
-  if (!hasEndBoundary) {
+  if (endBoundary) {
+    endBoundary.outcome = outcome;
+  } else {
     appendTranscriptEntry(state, {
       type: "turn-boundary",
       turnId: resolvedTurnId,
       phase: "end",
+      outcome,
     } as Omit<Extract<BtwTranscriptEntry, { type: "turn-boundary" }>, "id">);
   }
 
@@ -1180,6 +1193,11 @@ function applyAssistantMessageToTranscript(
   }
 }
 
+function outcomeFromStopReason(stopReason: string): BtwTurnOutcome {
+  if (stopReason === "aborted") return "aborted";
+  return stopReason === "error" ? "failed" : "completed";
+}
+
 function applyTranscriptEvent(state: BtwTranscriptState, event: AgentSessionEvent): void {
   switch (event.type) {
     case "turn_start": {
@@ -1263,7 +1281,8 @@ function applyTranscriptEvent(state: BtwTranscriptState, event: AgentSessionEven
       return;
     }
     case "turn_end": {
-      finishTranscriptTurn(state);
+      const stopReason = event.message.role === "assistant" ? event.message.stopReason : "stop";
+      finishTranscriptTurn(state, undefined, outcomeFromStopReason(stopReason));
       return;
     }
     default:
@@ -1284,7 +1303,7 @@ function appendPersistedTranscriptTurn(state: BtwTranscriptState, details: BtwDe
 function setTranscriptFailure(state: BtwTranscriptState, message: string): void {
   const turnId = state.currentTurnId ?? state.lastTurnId ?? ensureTranscriptTurn(state);
   upsertTranscriptTextEntry(state, turnId, "assistant-text", `❌ ${message}`, false);
-  finishTranscriptTurn(state, turnId);
+  finishTranscriptTurn(state, turnId, "failed");
 }
 
 function hasStreamingTranscriptEntry(entries: BtwTranscript): boolean {
@@ -1297,8 +1316,20 @@ function hasStreamingTranscriptEntry(entries: BtwTranscript): boolean {
   );
 }
 
-function getCompletedExchangeCount(entries: BtwTranscript): number {
-  return entries.filter((entry) => entry.type === "assistant-text" && !entry.streaming).length;
+export function getCompletedExchangeCount(entries: BtwTranscript): number {
+  const completedTurnIds = new Set(
+    entries.flatMap((entry) =>
+      entry.type === "turn-boundary" &&
+      entry.phase === "end" &&
+      (entry.outcome === undefined || entry.outcome === "completed")
+        ? [entry.turnId]
+        : [],
+    ),
+  );
+  return entries.filter(
+    (entry) =>
+      entry.type === "assistant-text" && !entry.streaming && completedTurnIds.has(entry.turnId),
+  ).length;
 }
 
 function buildOverlayTranscript(
@@ -3379,10 +3410,10 @@ export default function (pi: ExtensionAPI) {
         throw new Error("BTW request finished without a response.");
       }
       if (response.stopReason === "aborted") {
-        // ponytail: aborted turns still count toward the exchange counter; track turn outcomes if that matters.
         finishTranscriptTurn(
           transcriptState,
           transcriptState.currentTurnId ?? transcriptState.lastTurnId,
+          "aborted",
         );
         setOverlayStatus("⏹ Aborted. Press Esc again to dismiss the BTW overlay.", ctx);
         return;
