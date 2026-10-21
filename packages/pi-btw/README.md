@@ -94,8 +94,24 @@ By default BTW children only get Pi's built-in tools. To give them tools from sp
 - a local path that the main session already loaded is rejected; use an `npm:`/`git:` source instead
 - applies to `/btw ask`, `/btw new` and `/btw tangent`; `/btw readonly` never loads extensions and summarize stays tool-free
 - an invalid `btw.json`, a tool name that collides with a built-in, or a startup error fails the request with the real error instead of being ignored
-- this is separate from `pi-btw.json` (model/thinking/built-in tools defaults); `btw.json` only supports the `extensions` key
+- this is separate from `pi-btw.json` (model/thinking/built-in tools defaults); `btw.json` only supports the `extensions` and `workspace` keys
 - the child's system prompt states the tools it actually has, overriding tool claims inherited from the main session
+
+### SSH workspace (opt-in)
+
+When the main session works on a remote host through [`@99percentpeople/pi-ssh-remote`](https://www.npmjs.com/package/@99percentpeople/pi-ssh-remote) (0.6.2 or newer), a BTW child still runs on your machine by default: its `read`/`bash`/`edit`/`write` would touch local files, not the remote ones. To run them on the parent's remote host instead, set this in `~/.pi/agent/btw.json` or a trusted project's `.pi/btw.json`:
+
+```json
+{ "workspace": "ssh" }
+```
+
+- BTW opens its own SSH connection to the parent's current target, port and directory. It uses `pi-ssh-remote`'s transport and remote-adapter APIs directly and never runs its extension factory, so do not add that package to BTW's `extensions` list
+- authentication is whatever the parent uses (SSH keys, agent, the parent's SSH config file); BTW never prompts for or copies passwords
+- `/btw ask`, `/btw new`, `/btw tangent` and `/side` get remote `read`, `bash`, `edit` and `write`; `/btw readonly` gets remote `read`, `grep`, `find` and `ls` only. Tools from `/btw config` that the remote workspace does not provide are dropped instead of silently running locally
+- there is no fallback to local tools: a failed connection, a lost connection, or no active parent SSH workspace is reported as an error
+- the thread is tied to one workspace. After the parent changes host or directory, reconnects, or runs `/ssh-exit`, run `/btw clear` before continuing; a saved thread cannot be resumed against a different workspace
+- the overlay title and the child's system prompt show the workspace (`SSH host:port:/dir`); instructions and session files stay local
+- the project setting overrides the global one, independently of `extensions`; untrusted project settings are ignored. Use `"workspace": "local"` to select local tools explicitly
 
 ## Commands
 

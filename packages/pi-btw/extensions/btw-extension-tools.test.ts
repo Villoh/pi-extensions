@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { readBtwExtensionSources } from "./btw-extension-tools.ts";
+import { readBtwExtensionSources, readBtwWorkspaceMode } from "./btw-extension-tools.ts";
 
 function setup(globalConfig?: unknown, projectConfig?: unknown) {
   const root = mkdtempSync(join(tmpdir(), "btw-ext-"));
@@ -52,16 +52,34 @@ test("untrusted projects ignore .pi/btw.json", async () => {
 });
 
 test("invalid configs fail loudly", async () => {
-  for (const bad of [
-    { extensions: "npm:x" },
-    { extensions: [""] },
-    { other: 1 },
-    { workspace: "ssh" },
-  ]) {
+  for (const bad of [{ extensions: "npm:x" }, { extensions: [""] }, { other: 1 }]) {
     const dirs = setup(bad);
     await assert.rejects(
       readBtwExtensionSources({ ...dirs, projectTrusted: true }),
       /Invalid BTW config/,
     );
   }
+});
+
+test("workspace defaults to local, project overrides global, untrusted projects are ignored", async () => {
+  const none = setup();
+  assert.equal(await readBtwWorkspaceMode({ ...none, projectTrusted: true }), "local");
+  const dirs = setup({ workspace: "ssh" }, { workspace: "local" });
+  assert.equal(await readBtwWorkspaceMode({ ...dirs, projectTrusted: true }), "local");
+  assert.equal(await readBtwWorkspaceMode({ ...dirs, projectTrusted: false }), "ssh");
+  const onlyGlobal = setup({ workspace: "ssh" });
+  assert.equal(await readBtwWorkspaceMode({ ...onlyGlobal, projectTrusted: true }), "ssh");
+});
+
+test("workspace is validated independently of extensions", async () => {
+  const bad = setup({ workspace: "bogus" });
+  await assert.rejects(readBtwWorkspaceMode({ ...bad, projectTrusted: true }), /"local" or "ssh"/);
+  // A bad workspace value must not stop extensions from loading, and vice versa.
+  assert.deepEqual(await readBtwExtensionSources({ ...bad, projectTrusted: true }), []);
+  const badExtensions = setup({ extensions: "npm:x", workspace: "ssh" });
+  assert.equal(await readBtwWorkspaceMode({ ...badExtensions, projectTrusted: true }), "ssh");
+  await assert.rejects(
+    readBtwExtensionSources({ ...badExtensions, projectTrusted: true }),
+    /Invalid BTW config/,
+  );
 });

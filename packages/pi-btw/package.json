@@ -18,7 +18,7 @@
   },
   "scripts": {
     "check": "tsc --noEmit",
-    "test": "node --experimental-strip-types --test extensions/btw.test.ts extensions/btw-extension-tools.test.ts extensions/btw.sdk.test.ts"
+    "test": "node --experimental-strip-types --test extensions/btw.test.ts extensions/btw-extension-tools.test.ts extensions/btw.sdk.test.ts extensions/btw-ssh-workspace.test.ts"
   },
   "keywords": [
     "pi-package",

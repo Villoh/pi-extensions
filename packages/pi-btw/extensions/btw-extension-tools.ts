@@ -8,9 +8,10 @@ import {
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 
-// Opt-in extension tools for BTW child sessions, configured in `btw.json`
-// (global: <agentDir>/btw.json, project: <cwd>/.pi/btw.json). Deliberately a
-// different file from `pi-btw.json`, which holds model/thinking/tools defaults.
+// Opt-in extension tools and workspace for BTW child sessions, configured in
+// `btw.json` (global: <agentDir>/btw.json, project: <cwd>/.pi/btw.json).
+// Deliberately a different file from `pi-btw.json`, which holds
+// model/thinking/tools defaults.
 
 /** Resolve local paths relative to the config that owns them, not process.cwd(). */
 function resolveSource(source: string, configPath: string): string {
@@ -19,7 +20,16 @@ function resolveSource(source: string, configPath: string): string {
   return resolve(dirname(configPath), source);
 }
 
-async function readExtensionSources(path: string): Promise<string[] | undefined> {
+type BtwFileConfig = { extensions?: string[]; workspace?: "local" | "ssh" };
+
+/**
+ * Extensions and workspace are validated independently: a bad `extensions`
+ * list must not block reading the workspace mode, and vice versa.
+ */
+async function readBtwFileConfig(
+  path: string,
+  include: "extensions" | "workspace",
+): Promise<BtwFileConfig | undefined> {
   let text: string;
   try {
     text = await readFile(path, "utf8");
@@ -39,16 +49,21 @@ async function readExtensionSources(path: string): Promise<string[] | undefined>
   if (!config || typeof config !== "object" || Array.isArray(config)) {
     throw new Error(`Invalid BTW config ${path}: expected an object.`);
   }
-  if ("workspace" in config) {
-    // Failing loudly: silently running locally would hide a remote-workspace expectation.
+  if (Object.keys(config).some((field) => field !== "extensions" && field !== "workspace")) {
     throw new Error(
-      `Invalid BTW config ${path}: "workspace" is not supported by @villoh/pi-btw (no SSH workspaces).`,
+      `Invalid BTW config ${path}: only "extensions" and "workspace" keys are supported.`,
     );
   }
-  if (Object.keys(config).some((field) => field !== "extensions")) {
-    throw new Error(`Invalid BTW config ${path}: only the "extensions" key is supported.`);
+  const { extensions, workspace } = config as { extensions?: unknown; workspace?: unknown };
+
+  if (include === "workspace") {
+    if (workspace === undefined) return undefined;
+    if (workspace !== "local" && workspace !== "ssh") {
+      throw new Error(`Invalid BTW config ${path}: "workspace" must be "local" or "ssh".`);
+    }
+    return { workspace };
   }
-  const extensions = (config as { extensions?: unknown }).extensions;
+
   if (extensions === undefined) return undefined;
   if (
     !Array.isArray(extensions) ||
@@ -58,7 +73,11 @@ async function readExtensionSources(path: string): Promise<string[] | undefined>
       `Invalid BTW config ${path}: "extensions" must be an array of nonempty source strings.`,
     );
   }
-  return [...new Set(extensions.map((source: string) => resolveSource(source.trim(), path)))];
+  return {
+    extensions: [
+      ...new Set(extensions.map((source: string) => resolveSource(source.trim(), path))),
+    ],
+  };
 }
 
 /** Project lists replace global lists, including an explicit empty list. */
@@ -67,11 +86,24 @@ export async function readBtwExtensionSources(options: {
   agentDir: string;
   projectTrusted: boolean;
 }): Promise<string[]> {
-  const globalSources = await readExtensionSources(join(options.agentDir, "btw.json"));
-  const projectSources = options.projectTrusted
-    ? await readExtensionSources(join(options.cwd, ".pi", "btw.json"))
+  const globalConfig = await readBtwFileConfig(join(options.agentDir, "btw.json"), "extensions");
+  const projectConfig = options.projectTrusted
+    ? await readBtwFileConfig(join(options.cwd, ".pi", "btw.json"), "extensions")
     : undefined;
-  return projectSources ?? globalSources ?? [];
+  return projectConfig?.extensions ?? globalConfig?.extensions ?? [];
+}
+
+/** The project setting overrides the global one, independently of `extensions`. */
+export async function readBtwWorkspaceMode(options: {
+  cwd: string;
+  agentDir: string;
+  projectTrusted: boolean;
+}): Promise<"local" | "ssh"> {
+  const globalConfig = await readBtwFileConfig(join(options.agentDir, "btw.json"), "workspace");
+  const projectConfig = options.projectTrusted
+    ? await readBtwFileConfig(join(options.cwd, ".pi", "btw.json"), "workspace")
+    : undefined;
+  return projectConfig?.workspace ?? globalConfig?.workspace ?? "local";
 }
 
 async function canonicalPath(path: string): Promise<string> {
