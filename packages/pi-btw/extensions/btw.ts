@@ -648,6 +648,29 @@ export function withoutParentToolDeclarations(message: Message): Message {
   return rest as Message;
 }
 
+/**
+ * Subscription/OAuth and keyless providers resolve auth through headers, env
+ * or provider config rather than an API key, so `apiKey` alone is not a
+ * reliable "has credentials" signal.
+ */
+function hasUsableModelAuth(
+  ctx: ExtensionCommandContext,
+  model: SessionModel,
+  auth: Awaited<ReturnType<ExtensionCommandContext["modelRegistry"]["getApiKeyAndHeaders"]>>,
+): boolean {
+  if (!auth.ok) {
+    return false;
+  }
+  const hasValue = (values?: Record<string, string | null | undefined>) =>
+    !!values && Object.values(values).some((value) => !!value);
+  return (
+    !!auth.apiKey ||
+    hasValue(auth.headers) ||
+    hasValue(auth.env) ||
+    ctx.modelRegistry.hasConfiguredAuth(model)
+  );
+}
+
 function buildBtwSeedState(
   ctx: ExtensionCommandContext,
   thread: BtwDetails[],
@@ -2071,7 +2094,7 @@ export default function (pi: ExtensionAPI) {
   ): Promise<ResolvedBtwModel> {
     if (btwModelOverride) {
       const auth = await ctx.modelRegistry.getApiKeyAndHeaders(btwModelOverride);
-      if (auth.ok && auth.apiKey) {
+      if (hasUsableModelAuth(ctx, btwModelOverride, auth)) {
         return {
           model: btwModelOverride,
           source: "override",
@@ -3047,7 +3070,7 @@ export default function (pi: ExtensionAPI) {
     }
 
     const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-    if (!auth.ok || !auth.apiKey) {
+    if (!hasUsableModelAuth(ctx, model, auth)) {
       const message = auth.ok
         ? `No credentials available for ${model.provider}/${model.id}.`
         : auth.error;
@@ -3175,7 +3198,7 @@ export default function (pi: ExtensionAPI) {
     }
 
     const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-    if (!auth.ok || !auth.apiKey) {
+    if (!hasUsableModelAuth(ctx, model, auth)) {
       throw new Error(
         auth.ok ? `No credentials available for ${model.provider}/${model.id}.` : auth.error,
       );
