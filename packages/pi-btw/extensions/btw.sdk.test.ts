@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
 import * as piAI from "@earendil-works/pi-ai";
 import {
+  type AgentSession,
   createAgentSession,
   DefaultResourceLoader,
   ModelRuntime,
@@ -20,7 +21,7 @@ import {
 import btwExtension from "./btw.ts";
 
 const roots: string[] = [];
-const sessions: any[] = [];
+const sessions: AgentSession[] = [];
 const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
 
 afterEach(async () => {
@@ -71,7 +72,8 @@ async function fixture({ withExtension = false, withToolHistory = false } = {}) 
     await writeFile(join(agentDir, "btw.json"), JSON.stringify({ extensions: [extension] }));
   }
 
-  const requests: Array<{ prompt: string; messages: any[]; tools: string[] }> = [];
+  const requests: Array<{ prompt: string; messages: piAI.Context["messages"]; tools: string[] }> =
+    [];
   const modelRuntime = await ModelRuntime.create({
     authPath: join(agentDir, "auth.json"),
     modelsPath: join(agentDir, "models.json"),
@@ -252,7 +254,9 @@ describe("BTW commands with the real Pi SDK", () => {
       assert.deepEqual([...request.tools].sort(), [...mode.tools].sort());
       assert.match(request.prompt, /Project instruction sentinel/);
       assert.match(request.prompt, /<btw_capabilities>/);
-      assert.ok(request.prompt.includes(`Available tools in this BTW session: ${mode.tools.join(", ")}.`));
+      assert.ok(
+        request.prompt.includes(`Available tools in this BTW session: ${mode.tools.join(", ")}.`),
+      );
       assert.equal(
         JSON.stringify(request.messages).includes("parent context sentinel"),
         mode.inheritsContext,
@@ -280,7 +284,9 @@ describe("BTW commands with the real Pi SDK", () => {
   });
 
   it("does not replay parent tool declarations into the child", {
-    skip: !("createInitialSystemMessage" in piAI) && "needs a Pi SDK with system-message tool declarations",
+    skip:
+      !("createInitialSystemMessage" in piAI) &&
+      "needs a Pi SDK with system-message tool declarations",
   }, async () => {
     for (const mode of [
       { args: "ask", tools: BUILTINS },
@@ -368,7 +374,9 @@ describe("BTW commands with the real Pi SDK", () => {
     requests.length = 0;
     // Injecting the summary into the parent triggers a parent turn too, so find the summary request.
     await command("btw", "summarize");
-    const summary = requests.find((request) => /Summarize the side conversation/.test(request.prompt));
+    const summary = requests.find((request) =>
+      /Summarize the side conversation/.test(request.prompt),
+    );
     assert.ok(summary, "a summarize request was sent");
     assert.deepEqual(summary.tools, []);
     assert.match(summary.prompt, /No tools are available in this BTW session\./);
