@@ -17,6 +17,7 @@ import {
   type ExtensionCommandContext,
   type ExtensionContext,
   getAgentDir,
+  getMarkdownTheme,
   getSettingsListTheme,
   type ModelRuntime,
   type ResourceLoader,
@@ -30,8 +31,12 @@ import {
   Input,
   Key,
   type KeybindingsManager,
+  type KeyId,
+  Markdown,
+  type MarkdownTheme,
   matchesKey,
   type OverlayHandle,
+  type OverlayOptions,
   type SettingItem,
   SettingsList,
   Text,
@@ -47,7 +52,45 @@ const BTW_RESET_TYPE = "btw-thread-reset";
 const BTW_MODEL_OVERRIDE_TYPE = "btw-model-override";
 const BTW_THINKING_OVERRIDE_TYPE = "btw-thinking-override";
 const BTW_CONFIG_FILENAME = "pi-btw.json";
-const BTW_FOCUS_SHORTCUTS = [Key.alt("/"), Key.ctrlAlt("w")] as const;
+const BTW_DEFAULT_FOCUS_SHORTCUTS: readonly KeyId[] = [
+  Key.alt("/"),
+  Key.super("/"),
+  Key.ctrlAlt("w"),
+];
+// pi-tui KeyId grammar: modifiers + one letter/digit/symbol/named key.
+const BTW_KEY_ID_PATTERN =
+  /^(?:(?:ctrl|shift|alt|super)\+)*(?:[a-z0-9`\-=[\]\\;',./!@#$%^&*()_+|~{}:<>?]|escape|esc|enter|return|tab|space|backspace|delete|insert|clear|home|end|pageup|pagedown|up|down|left|right|f[1-9]|f1[0-2])$/;
+
+/**
+ * Focus-toggle shortcuts. PI_BTW_FOCUS_KEYS (comma-separated pi-tui key ids,
+ * e.g. "ctrl+/,ctrl+alt+b") replaces the defaults; invalid entries are
+ * ignored and the defaults are kept if none remain, so focus can't get lost.
+ */
+export function resolveBtwFocusShortcuts(env: NodeJS.ProcessEnv = process.env): KeyId[] {
+  const parsed = (env.PI_BTW_FOCUS_KEYS ?? "")
+    .split(",")
+    .map((part) => part.trim().toLowerCase())
+    .filter((part) => BTW_KEY_ID_PATTERN.test(part));
+  const unique = [...new Set(parsed)] as KeyId[];
+  return unique.length > 0 ? unique : [...BTW_DEFAULT_FOCUS_SHORTCUTS];
+}
+
+export function describeFocusShortcuts(shortcuts: readonly KeyId[]): string {
+  const labels = shortcuts.map((shortcut) =>
+    shortcut
+      .split("+")
+      .map((part) =>
+        part.length === 1 ? part.toUpperCase() : part.charAt(0).toUpperCase() + part.slice(1),
+      )
+      .join("+"),
+  );
+  return labels.length <= 1
+    ? (labels[0] ?? "")
+    : `${labels.slice(0, -1).join(", ")} or ${labels.at(-1)}`;
+}
+
+const BTW_FOCUS_SHORTCUTS = resolveBtwFocusShortcuts();
+const BTW_FOCUS_SHORTCUTS_LABEL = describeFocusShortcuts(BTW_FOCUS_SHORTCUTS);
 
 // Sub-session toolset for `/btw` threads. Single source of truth:
 // createBtwSubSession enables exactly these tools, and buildBtwSeedState
@@ -133,6 +176,11 @@ function matchesBtwFocusShortcut(data: string): boolean {
   return BTW_FOCUS_SHORTCUTS.some((shortcut) => matchesKey(data, shortcut));
 }
 
+/** Toggles the overlay between framed "window" width and edge-to-edge "full" width. */
+const BTW_WIDTH_TOGGLE_SHORTCUT = Key.alt("w");
+
+type BtwOverlayWidthMode = "window" | "full";
+
 const BTW_SYSTEM_PROMPT = [
   "You are having an aside conversation with the user, separate from their main working session.",
   "If main session messages are provided, they are for context only — that work is being handled by another agent.",
@@ -140,6 +188,13 @@ const BTW_SYSTEM_PROMPT = [
   "Focus on answering the user's side questions, helping them think through ideas, or planning next steps.",
   "Do not act as if you need to continue unfinished work from the main session unless the user explicitly asks you to prepare something for injection back to it.",
 ].join(" ");
+
+// Fixed, never user-configurable: the read-only boundary is structural (the
+// child session only has these tools), not prompt-based.
+export const BTW_READONLY_TOOLS = ["read", "grep", "find", "ls"] as const;
+
+const BTW_READONLY_PROMPT =
+  "This side thread is read-only. You can only use read, grep, find and ls; you cannot run commands, edit or write files, regardless of what the main session could do.";
 
 const BTW_SUMMARIZE_SYSTEM_PROMPT =
   "Summarize the side conversation concisely. Preserve key decisions, plans, insights, risks, and action items. Output only the summary.";
@@ -149,7 +204,7 @@ const BTW_CONTINUE_THREAD_USER_TEXT =
 const BTW_CONTINUE_THREAD_ASSISTANT_TEXT = "Understood, continuing our side conversation.";
 
 type SessionThinkingLevel = "off" | AiThinkingLevel;
-type BtwThreadMode = "contextual" | "tangent";
+type BtwThreadMode = "contextual" | "tangent" | "readonly";
 type SessionModel = NonNullable<ExtensionCommandContext["model"]>;
 /**
  * Loose model reference parsed from `/btw model <provider> <id> <api>` and persisted to
@@ -263,6 +318,7 @@ type BtwSessionRuntime = {
   mode: BtwThreadMode;
   subscriptions: Set<() => void>;
   sideThreadStartIndex: number;
+  abortPromise?: Promise<void>;
 };
 
 type OverlayRuntime = {
@@ -332,6 +388,7 @@ function createBtwResourceLoader(
 function getModelRuntime(ctx: ExtensionCommandContext): ModelRuntime {
   // ModelRegistry keeps the active runtime private, but sub-sessions must share it
   // so extension-registered providers such as CLIProxyAPI remain available.
+  // SAFETY: pi's ModelRegistry exposes `runtime` at runtime but not in its public type.
   return (ctx.modelRegistry as unknown as { runtime: ModelRuntime }).runtime;
 }
 
@@ -375,6 +432,11 @@ const BTW_COMMAND_ARGUMENTS = [
     label: "tangent",
     description: "Start a contextless thread",
   },
+  {
+    value: "readonly",
+    label: "readonly",
+    description: "Contextual thread limited to read/grep/find/ls",
+  },
   { value: "clear", label: "clear", description: "Clear the current thread" },
   {
     value: "inject",
@@ -411,6 +473,8 @@ const BTW_USAGE = [
   "  /btw ask [--save] <question>",
   "  /btw new [--save] [question]",
   "  /btw tangent [--save] [question]",
+  "  /btw readonly [--save] [question]   (read/grep/find/ls only)",
+  "  /side ...                           (alias for /btw)",
   "  /btw clear | resume | help",
   "  /btw inject [instructions]",
   "  /btw summarize [instructions]",
@@ -427,6 +491,35 @@ function getBtwArgumentCompletions(argumentPrefix: string) {
 
   const filtered = BTW_COMMAND_ARGUMENTS.filter((item) => item.value.startsWith(normalized));
   return filtered.length > 0 ? [...filtered] : null;
+}
+
+type BtwCompletion = { insert: string; label: string; description: string };
+
+/**
+ * Composer slash completion: `/` offers the `/btw` and `/side` entries, and
+ * `/btw ` (or `/side `) offers the subcommands. Any other slash input is left
+ * alone because it is routed to the sub-session as a normal prompt.
+ */
+export function getBtwCompletions(value: string): BtwCompletion[] {
+  const entry = value.match(/^\/([^\s]*)$/);
+  if (entry) {
+    return [
+      { insert: "/btw ", label: "/btw", description: "Ask or manage the BTW thread" },
+      { insert: "/side ", label: "/side", description: "Alias for /btw" },
+    ].filter((item) => item.label.startsWith(`/${entry[1].toLowerCase()}`));
+  }
+
+  const sub = value.match(/^\/(btw|side)\s+([^\s]*)$/i);
+  if (!sub) {
+    return [];
+  }
+  return BTW_COMMAND_ARGUMENTS.filter((item) => item.value.startsWith(sub[2].toLowerCase())).map(
+    (item) => ({
+      insert: `/${sub[1]} ${item.value} `,
+      label: item.value,
+      description: item.description,
+    }),
+  );
 }
 
 function parseBtwCommand(args: string): { name: string; args: string } {
@@ -497,7 +590,13 @@ type BtwConfigFile = {
   tools?: string[];
 };
 
-function resolveBtwToolNames(config: BtwConfigFile): string[] {
+export function resolveBtwToolNames(
+  config: BtwConfigFile,
+  mode: BtwThreadMode = "contextual",
+): string[] {
+  if (mode === "readonly") {
+    return [...BTW_READONLY_TOOLS];
+  }
   return config.tools && config.tools.length > 0 ? config.tools : [...BTW_SUB_SESSION_TOOLS];
 }
 
@@ -579,6 +678,48 @@ export function stripForeignToolActivity(
   return filtered;
 }
 
+/**
+ * Pi 1.1+ system messages carry `toolsAdded`/`toolsRemoved` deltas for the
+ * parent's toolset. Replayed into the child they reference tools it never
+ * declared, and Anthropic rejects the request (400 tool_addition/tool_removal
+ * references unknown tool). The child declares its own tools, so drop them.
+ */
+export function withoutParentToolDeclarations(message: Message): Message {
+  if ((message as { role: string }).role !== "system") return message;
+  const {
+    toolsAdded: _added,
+    toolsRemoved: _removed,
+    ...rest
+  } = message as Message & {
+    toolsAdded?: unknown;
+    toolsRemoved?: unknown;
+  };
+  return rest as Message;
+}
+
+/**
+ * Subscription/OAuth and keyless providers resolve auth through headers, env
+ * or provider config rather than an API key, so `apiKey` alone is not a
+ * reliable "has credentials" signal.
+ */
+function hasUsableModelAuth(
+  ctx: ExtensionCommandContext,
+  model: SessionModel,
+  auth: Awaited<ReturnType<ExtensionCommandContext["modelRegistry"]["getApiKeyAndHeaders"]>>,
+): boolean {
+  if (!auth.ok) {
+    return false;
+  }
+  const hasValue = (values?: Record<string, string | null | undefined>) =>
+    !!values && Object.values(values).some((value) => !!value);
+  return (
+    !!auth.apiKey ||
+    hasValue(auth.headers) ||
+    hasValue(auth.env) ||
+    ctx.modelRegistry.hasConfiguredAuth(model)
+  );
+}
+
 function buildBtwSeedState(
   ctx: ExtensionCommandContext,
   thread: BtwDetails[],
@@ -588,7 +729,7 @@ function buildBtwSeedState(
 ): { messages: Message[]; sideThreadStartIndex: number } {
   const messages: Message[] = [];
 
-  if (mode === "contextual") {
+  if (mode !== "tangent") {
     const contextMessages: Message[] = [];
     try {
       contextMessages.push(
@@ -604,6 +745,7 @@ function buildBtwSeedState(
             return [];
           }
 
+          // SAFETY: fallback path for malformed entries; every field is validated below.
           const message = entry as unknown as Partial<Message> & {
             role?: string;
             customType?: string;
@@ -622,7 +764,9 @@ function buildBtwSeedState(
         }),
       );
     }
-    messages.push(...stripForeignToolActivity(contextMessages, allowedTools));
+    messages.push(
+      ...stripForeignToolActivity(contextMessages, allowedTools).map(withoutParentToolDeclarations),
+    );
   }
 
   const sideThreadStartIndex = messages.length;
@@ -791,26 +935,6 @@ function finishTranscriptTurn(state: BtwTranscriptState, turnId?: number | null)
   state.lastTurnId = resolvedTurnId;
   if (state.currentTurnId === resolvedTurnId) {
     state.currentTurnId = null;
-  }
-}
-
-function removeTranscriptTurn(state: BtwTranscriptState, turnId: number | null): void {
-  if (turnId === null) {
-    return;
-  }
-
-  state.entries = state.entries.filter((entry) => entry.turnId !== turnId);
-  for (const [toolCallId, toolCall] of state.toolCalls.entries()) {
-    if (toolCall.turnId === turnId) {
-      state.toolCalls.delete(toolCallId);
-    }
-  }
-
-  if (state.currentTurnId === turnId) {
-    state.currentTurnId = null;
-  }
-  if (state.lastTurnId === turnId) {
-    state.lastTurnId = null;
   }
 }
 
@@ -1163,6 +1287,8 @@ function getCompletedExchangeCount(entries: BtwTranscript): number {
 function buildOverlayTranscript(
   entries: BtwTranscript,
   theme: ExtensionContext["ui"]["theme"],
+  markdownTheme: MarkdownTheme,
+  contentWidth: number,
 ): string[] {
   if (entries.length === 0) {
     return [theme.fg("dim", "No BTW thread yet. Ask a side question to start one.")];
@@ -1174,8 +1300,17 @@ function buildOverlayTranscript(
   const toolBadge = buildTranscriptBadge(theme, "Tool", "toolPendingBg", "warning");
   const assistantBadge = buildTranscriptBadge(theme, "Assistant", "customMessageBg", "success");
   const separator = theme.fg("borderMuted", "────────────────────────────────────────");
-  const blockIndent = "    ";
+  const blockIndent = BTW_BLOCK_INDENT;
   const resultIndent = blockIndent;
+
+  const pushMarkdownBlock = (header: string, markdown: Markdown) => {
+    pushBlankLine();
+    lines.push(header);
+    for (const line of markdown.render(Math.max(1, contentWidth))) {
+      const trimmed = line.replace(/\s+$/u, "");
+      lines.push(trimmed ? `${blockIndent}${trimmed}` : "");
+    }
+  };
 
   const pushBlankLine = () => {
     if (lines.length > 0 && lines[lines.length - 1] !== "") {
@@ -1241,9 +1376,13 @@ function buildOverlayTranscript(
       const thinkingHeader = entry.streaming
         ? `${thinkingBadge} ${theme.fg("warning", "▍")}`
         : thinkingBadge;
-      pushStackedBlock(thinkingHeader, entry.text, {
-        style: (line) => theme.fg("warning", theme.italic(line)),
-      });
+      pushMarkdownBlock(
+        thinkingHeader,
+        new Markdown(entry.text, 0, 0, markdownTheme, {
+          color: (text: string) => theme.fg("warning", text),
+          italic: true,
+        }),
+      );
       continue;
     }
 
@@ -1273,7 +1412,7 @@ function buildOverlayTranscript(
       const assistantHeader = entry.streaming
         ? `${assistantBadge} ${theme.fg("warning", "▍")}`
         : assistantBadge;
-      pushStackedBlock(assistantHeader, entry.text);
+      pushMarkdownBlock(assistantHeader, new Markdown(entry.text, 0, 0, markdownTheme));
     }
   }
 
@@ -1390,6 +1529,11 @@ function saveVisibleBtwNote(
   return "saved";
 }
 
+/** The overlay needs Pi's TUI; RPC/SDK hosts report `hasUI` but cannot open it. */
+function canRenderBtwOverlay(ctx: ExtensionContext | ExtensionCommandContext): boolean {
+  return ctx.hasUI && ctx.mode === "tui";
+}
+
 function notify(
   ctx: ExtensionContext | ExtensionCommandContext,
   message: string,
@@ -1402,9 +1546,12 @@ function notify(
 
 /** Fixed overlay rows outside the transcript viewport (must match render() structure). */
 const BTW_OVERLAY_CHROME_LINES = 9;
+/** Indent applied to transcript block bodies. */
+const BTW_BLOCK_INDENT = "    ";
 
 function getOverlayTitle(mode: BtwThreadMode): string {
-  return mode === "tangent" ? "BTW tangent" : "BTW";
+  if (mode === "tangent") return "BTW tangent";
+  return mode === "readonly" ? "BTW · read-only" : "BTW";
 }
 
 function buildTranscriptBadge(
@@ -1426,20 +1573,31 @@ class BtwOverlayComponent extends Container implements Focusable {
   private readonly readTranscriptEntries: () => BtwTranscript;
   private readonly getStatus: () => string | null;
   private readonly getMode: () => BtwThreadMode;
+  private readonly getWidthMode: () => BtwOverlayWidthMode;
   private readonly onSubmitCallback: (value: string) => void;
   private readonly onDismissCallback: () => void;
   private readonly onUnfocusCallback: () => void;
+  private readonly onToggleWidthCallback: () => void;
+  private readonly managesMouseReporting: boolean;
   private readonly tui: TUI;
   private readonly theme: ExtensionContext["ui"]["theme"];
+  private readonly markdownTheme: MarkdownTheme;
   private transcriptLines: string[] = [];
   private transcriptScrollOffset = 0;
   private transcriptViewportHeight = 8;
+  private contentWidth = 66;
   private followTranscript = true;
   private _focused = false;
   private modeTextValue = "";
   private summaryTextValue = "";
   private statusTextValue = "";
   private hintsTextValue = "";
+  private readonly keybindings: KeybindingsManager;
+  private readonly handleRawInput: (data: string) => void;
+  private completionQuery = "";
+  private completionDismissedFor: string | null = null;
+  private completionItems: BtwCompletion[] = [];
+  private completionIndex = 0;
 
   get focused(): boolean {
     return this._focused;
@@ -1457,19 +1615,28 @@ class BtwOverlayComponent extends Container implements Focusable {
     readTranscriptEntries: () => BtwTranscript,
     getStatus: () => string | null,
     getMode: () => BtwThreadMode,
+    getWidthMode: () => BtwOverlayWidthMode,
     onSubmit: (value: string) => void,
     onDismiss: () => void,
     onUnfocus: () => void,
+    onToggleWidth: () => void,
   ) {
     super();
     this.tui = tui;
     this.theme = theme;
+    this.markdownTheme = getMarkdownTheme();
     this.readTranscriptEntries = readTranscriptEntries;
     this.getStatus = getStatus;
     this.getMode = getMode;
+    this.getWidthMode = getWidthMode;
     this.onSubmitCallback = onSubmit;
     this.onDismissCallback = onDismiss;
     this.onUnfocusCallback = onUnfocus;
+    this.onToggleWidthCallback = onToggleWidth;
+    // Fullscreen pi owns mouse reporting for the whole terminal session; only
+    // regular mode needs BTW to enable/disable it around the overlay.
+    this.managesMouseReporting = tui.mode !== "fullscreen";
+    this.keybindings = keybindings;
 
     this.modeText = new Text("", 1, 0);
     this.summaryText = new Text("", 1, 0);
@@ -1488,14 +1655,16 @@ class BtwOverlayComponent extends Container implements Focusable {
     this.hintsText = new Text("", 1, 0);
 
     // Enable SGR mouse reporting so wheel/touchpad events reach handleInput().
-    this.tui.terminal?.write?.("\x1b[?1000h\x1b[?1006h");
+    if (this.managesMouseReporting) {
+      this.tui.terminal?.write?.("\x1b[?1000h\x1b[?1006h");
+    }
 
     const originalHandleInput = this.input.handleInput.bind(this.input);
+    this.handleRawInput = originalHandleInput;
     this.input.handleInput = (data: string) => {
       if (keybindings.matches(data, "app.clear")) {
         if (this.input.getValue().length > 0) {
-          this.input.setValue("");
-          this.tui.requestRender();
+          this.setDraft("");
           return;
         }
 
@@ -1508,22 +1677,92 @@ class BtwOverlayComponent extends Container implements Focusable {
         return;
       }
       originalHandleInput(data);
+      this.updateCompletions();
+      this.tui.requestRender();
     };
 
     this.refresh();
   }
 
+  private updateCompletions(): void {
+    const value = this.input.getValue();
+    if (value !== this.completionQuery) {
+      this.completionQuery = value;
+      this.completionIndex = 0;
+      this.completionDismissedFor = null;
+    }
+    this.completionItems = value === this.completionDismissedFor ? [] : getBtwCompletions(value);
+  }
+
+  /** Returns true when the key was consumed by the completion list. */
+  private handleCompletionInput(data: string): boolean {
+    this.updateCompletions();
+    if (this.completionItems.length === 0) {
+      return false;
+    }
+
+    const count = this.completionItems.length;
+    if (matchesKey(data, Key.up) || matchesKey(data, Key.down)) {
+      const delta = matchesKey(data, Key.up) ? -1 : 1;
+      this.completionIndex = (this.completionIndex + delta + count) % count;
+    } else if (matchesKey(data, Key.tab) || matchesKey(data, Key.enter)) {
+      const selected = this.completionItems[this.completionIndex];
+      // Enter on an already-complete subcommand submits instead of re-completing.
+      if (matchesKey(data, Key.enter) && selected.insert.trim() === this.input.getValue().trim()) {
+        return false;
+      }
+      this.setDraft(selected.insert);
+    } else if (this.keybindings.matches(data, "tui.select.cancel")) {
+      this.completionDismissedFor = this.input.getValue();
+      this.completionItems = [];
+    } else {
+      return false;
+    }
+
+    this.tui.requestRender();
+    return true;
+  }
+
+  private completionRows(): string[] {
+    this.updateCompletions();
+    const start = Math.max(0, Math.min(this.completionIndex - 4, this.completionItems.length - 5));
+    return this.completionItems.slice(start, start + 5).map((item, index) => {
+      const selected = start + index === this.completionIndex;
+      return this.theme.fg(
+        selected ? "accent" : "dim",
+        `${selected ? "→" : " "} ${item.label}  ${item.description}`,
+      );
+    });
+  }
+
+  /**
+   * Full-width mode drops the side bars and corners so a terminal Shift+drag
+   * selection captures only the dialog's own text.
+   */
+  private get borderless(): boolean {
+    return this.getWidthMode() === "full";
+  }
+
   private frameLine(content: string, innerWidth: number): string {
     const truncated = truncateToWidth(content, innerWidth, "");
     const padding = Math.max(0, innerWidth - visibleWidth(truncated));
+    if (this.borderless) {
+      return `${truncated}${" ".repeat(padding)}`;
+    }
     return `${this.theme.fg("border", "│")}${truncated}${" ".repeat(padding)}${this.theme.fg("border", "│")}`;
   }
 
   private ruleLine(innerWidth: number): string {
+    if (this.borderless) {
+      return this.theme.fg("border", "─".repeat(innerWidth));
+    }
     return this.theme.fg("border", `├${"─".repeat(innerWidth)}┤`);
   }
 
   private borderLine(innerWidth: number, edge: "top" | "bottom"): string {
+    if (this.borderless) {
+      return this.theme.fg("border", "─".repeat(innerWidth));
+    }
     const left = edge === "top" ? "┌" : "└";
     const right = edge === "top" ? "┐" : "┘";
     return this.theme.fg("border", `${left}${"─".repeat(innerWidth)}${right}`);
@@ -1555,7 +1794,9 @@ class BtwOverlayComponent extends Container implements Focusable {
   }
 
   dispose(): void {
-    this.tui.terminal?.write?.("\x1b[?1000l\x1b[?1006l");
+    if (this.managesMouseReporting) {
+      this.tui.terminal?.write?.("\x1b[?1000l\x1b[?1006l");
+    }
   }
 
   private getMouseScrollDelta(data: string): number | null {
@@ -1578,9 +1819,18 @@ class BtwOverlayComponent extends Container implements Focusable {
       return;
     }
 
+    if (matchesKey(data, BTW_WIDTH_TOGGLE_SHORTCUT)) {
+      this.onToggleWidthCallback();
+      return;
+    }
+
     const mouseScrollDelta = this.getMouseScrollDelta(data);
     if (mouseScrollDelta !== null) {
       this.scrollTranscript(mouseScrollDelta);
+      return;
+    }
+
+    if (this.handleCompletionInput(data)) {
       return;
     }
 
@@ -1604,7 +1854,8 @@ class BtwOverlayComponent extends Container implements Focusable {
   }
 
   private inputFrameLine(dialogWidth: number): string {
-    const targetWidth = Math.max(1, dialogWidth - 2);
+    const borderColumns = this.borderless ? 0 : 2;
+    const targetWidth = Math.max(1, dialogWidth - borderColumns);
     const previousFocused = this.input.focused;
     // Input.render() emits CURSOR_MARKER when focused. In overlay mode that APC marker
     // can skew width/composition on this one row before the TUI strips it, producing a
@@ -1615,6 +1866,9 @@ class BtwOverlayComponent extends Container implements Focusable {
       const renderedInputLine = this.input.render(targetWidth)[0] ?? "";
       const inputLine = truncateToWidth(renderedInputLine, targetWidth, "");
       const padding = Math.max(0, targetWidth - visibleWidth(inputLine));
+      if (this.borderless) {
+        return `${inputLine}${" ".repeat(padding)}`;
+      }
       return `${this.theme.fg("border", "│")}${inputLine}${" ".repeat(padding)}${this.theme.fg("border", "│")}`;
     } finally {
       this.input.focused = previousFocused;
@@ -1627,11 +1881,18 @@ class BtwOverlayComponent extends Container implements Focusable {
 
   override render(width: number): string[] {
     const dialogWidth = Math.max(24, width);
-    const innerWidth = Math.max(22, dialogWidth - 2);
+    const innerWidth = Math.max(22, dialogWidth - (this.borderless ? 0 : 2));
+    // Markdown wraps itself, so the transcript must be rebuilt for the real width.
+    const contentWidth = Math.max(1, innerWidth - BTW_BLOCK_INDENT.length);
+    if (contentWidth !== this.contentWidth) {
+      this.contentWidth = contentWidth;
+      this.rebuildTranscriptLines();
+    }
     const transcriptLines = this.wrapTranscript(innerWidth);
     const dialogHeight = this.getDialogHeight();
     const chromeHeight = BTW_OVERLAY_CHROME_LINES;
-    const transcriptHeight = Math.max(6, dialogHeight - chromeHeight);
+    const completionRows = this.completionRows();
+    const transcriptHeight = Math.max(1, dialogHeight - chromeHeight - completionRows.length);
     this.transcriptViewportHeight = transcriptHeight;
 
     const maxScroll = Math.max(0, transcriptLines.length - transcriptHeight);
@@ -1676,6 +1937,9 @@ class BtwOverlayComponent extends Container implements Focusable {
 
     lines.push(this.ruleLine(innerWidth));
     lines.push(this.frameLine(this.theme.fg("warning", this.statusTextValue.trim()), innerWidth));
+    for (const row of completionRows) {
+      lines.push(this.frameLine(row, innerWidth));
+    }
     lines.push(this.inputFrameLine(dialogWidth));
     lines.push(this.frameLine(this.theme.fg("dim", this.hintsTextValue.trim()), innerWidth));
     lines.push(this.borderLine(innerWidth, "bottom"));
@@ -1684,7 +1948,13 @@ class BtwOverlayComponent extends Container implements Focusable {
   }
 
   setDraft(value: string): void {
-    this.input.setValue(value);
+    // Input.setValue keeps the old cursor; pasting into an empty input leaves
+    // it after the inserted text (e.g. after a completed command's trailing space).
+    this.input.setValue("");
+    if (value) {
+      this.handleRawInput(`\x1b[200~${value}\x1b[201~`);
+    }
+    this.updateCompletions();
     this.tui.requestRender();
   }
 
@@ -1696,6 +1966,15 @@ class BtwOverlayComponent extends Container implements Focusable {
     return this.readTranscriptEntries().map((entry) => ({ ...entry }));
   }
 
+  private rebuildTranscriptLines(): void {
+    this.transcriptLines = buildOverlayTranscript(
+      this.readTranscriptEntries(),
+      this.theme,
+      this.markdownTheme,
+      this.contentWidth,
+    );
+  }
+
   refresh(): void {
     this.modeTextValue = `${getOverlayTitle(this.getMode())} · hidden thread preserved`;
     this.modeText.setText(this.modeTextValue);
@@ -1705,7 +1984,7 @@ class BtwOverlayComponent extends Container implements Focusable {
     this.summaryTextValue = `${exchanges} exchange${exchanges === 1 ? "" : "s"}${active}`;
     this.summaryText.setText(this.summaryTextValue);
 
-    this.transcriptLines = buildOverlayTranscript(entries, this.theme);
+    this.rebuildTranscriptLines();
     this.transcript.clear();
     for (const line of this.transcriptLines) {
       this.transcript.addChild(new Text(line, 1, 0));
@@ -1714,7 +1993,7 @@ class BtwOverlayComponent extends Container implements Focusable {
     const status = this.getStatus() ?? "Ready. Enter submits; Escape dismisses without clearing.";
     this.statusTextValue = status;
     this.statusText.setText(this.statusTextValue);
-    this.hintsTextValue = "Scroll wheel ↑↓ PgUp/PgDn · Enter · Alt+/ focus · Esc";
+    this.hintsTextValue = `Scroll wheel ↑↓ PgUp/PgDn · Tab complete · Enter · ${BTW_FOCUS_SHORTCUTS_LABEL} focus · Alt+w width · Esc`;
     this.hintsText.setText(this.hintsTextValue);
     this.tui.requestRender();
   }
@@ -1735,6 +2014,7 @@ export default function (pi: ExtensionAPI) {
   let transcriptState = createEmptyTranscriptState();
   let overlayStatus: string | null = null;
   let overlayDraft = "";
+  let overlayWidthMode: BtwOverlayWidthMode = "window";
   let overlayRuntime: OverlayRuntime | null = null;
   let lastUiContext: ExtensionContext | ExtensionCommandContext | null = null;
   let activeBtwSession: BtwSessionRuntime | null = null;
@@ -1778,6 +2058,33 @@ export default function (pi: ExtensionAPI) {
       handle.focus();
     }
     overlayRuntime?.refresh?.();
+  }
+
+  function getOverlayOptions(): OverlayOptions {
+    const base: OverlayOptions = {
+      minWidth: 72,
+      maxHeight: "78%",
+      anchor: "top-center",
+      nonCapturing: true,
+    };
+    return overlayWidthMode === "full"
+      ? { ...base, width: "100%", margin: { top: 1 } }
+      : { ...base, width: "78%", margin: { top: 1, left: 2, right: 2 } };
+  }
+
+  async function toggleOverlayWidth(
+    ctx: ExtensionContext | ExtensionCommandContext,
+  ): Promise<void> {
+    overlayWidthMode = overlayWidthMode === "window" ? "full" : "window";
+    // overlayOptions are fixed at open time, so reopen; close() keeps the draft.
+    dismissOverlay();
+    await ensureOverlay(ctx);
+    setOverlayStatus(
+      overlayWidthMode === "full"
+        ? "Full-width mode. Shift+drag now selects only the dialog. Alt+w to restore the window."
+        : "Window mode. Alt+w switches to full-width for clean copy selection.",
+      ctx,
+    );
   }
 
   function focusOverlay(): void {
@@ -1875,19 +2182,39 @@ export default function (pi: ExtensionAPI) {
     }
 
     clearBtwSessionSubscriptions(current);
-
-    try {
-      await current.session.abort();
-    } catch {
-      // Ignore abort errors during BTW session replacement/shutdown.
-    }
-
+    await requestBtwSessionAbort(current);
     current.session.dispose();
+  }
+
+  function requestBtwSessionAbort(sessionRuntime: BtwSessionRuntime): Promise<void> {
+    sessionRuntime.abortPromise ??= Promise.resolve()
+      .then(() => sessionRuntime.session.abort())
+      .catch(() => {
+        // Ignore abort errors during BTW cancellation/replacement/shutdown.
+      });
+    return sessionRuntime.abortPromise;
   }
 
   async function dismissOverlaySession(): Promise<void> {
     dismissOverlay();
     await disposeBtwSession();
+  }
+
+  /**
+   * Esc while streaming aborts the in-flight request (and drops queued
+   * follow-ups) but keeps the overlay open with the partial transcript; a
+   * second Esc, or Esc while idle, dismisses.
+   */
+  async function dismissOrAbortOverlaySession(): Promise<void> {
+    const sessionRuntime = activeBtwSession;
+    if (sessionRuntime?.session.isStreaming && !sessionRuntime.abortPromise) {
+      btwQueue = [];
+      setOverlayStatus("⏹ Aborting. Press Esc again to dismiss the BTW overlay.");
+      await requestBtwSessionAbort(sessionRuntime);
+      sessionRuntime.abortPromise = undefined;
+      return;
+    }
+    await dismissOverlaySession();
   }
 
   async function resolveBtwModel(
@@ -1896,7 +2223,7 @@ export default function (pi: ExtensionAPI) {
   ): Promise<ResolvedBtwModel> {
     if (btwModelOverride) {
       const auth = await ctx.modelRegistry.getApiKeyAndHeaders(btwModelOverride);
-      if (auth.ok && auth.apiKey) {
+      if (hasUsableModelAuth(ctx, btwModelOverride, auth)) {
         return {
           model: btwModelOverride,
           source: "override",
@@ -2055,7 +2382,7 @@ export default function (pi: ExtensionAPI) {
   }
 
   async function showBtwConfig(ctx: ExtensionCommandContext): Promise<void> {
-    if (!ctx.hasUI) {
+    if (!canRenderBtwOverlay(ctx)) {
       const settings = await resolveBtwSettings(ctx);
       notify(
         ctx,
@@ -2183,18 +2510,7 @@ export default function (pi: ExtensionAPI) {
     }
 
     const config = readBtwConfig();
-    const toolNames = resolveBtwToolNames(config);
-
-    const { session } = await createAgentSession({
-      sessionManager: SessionManager.inMemory(),
-      model: settings.model,
-      modelRuntime: getModelRuntime(ctx),
-      thinkingLevel: settings.thinkingLevel,
-      // Defaults to pi's coding-agent toolset (read/bash/edit/write);
-      // overridable via /btw config.
-      tools: toolNames,
-      resourceLoader: createBtwResourceLoader(ctx),
-    });
+    const toolNames = resolveBtwToolNames(config, mode);
 
     const { messages: seedMessages, sideThreadStartIndex } = buildBtwSeedState(
       ctx,
@@ -2203,9 +2519,27 @@ export default function (pi: ExtensionAPI) {
       settings.model,
       new Set(toolNames),
     );
-    if (seedMessages.length > 0) {
-      session.agent.state.messages = seedMessages as typeof session.state.messages;
+    // Pi 0.87+ builds provider context from the session manager, not from
+    // agent.state.messages, so seed it before creating the session.
+    const sessionManager = SessionManager.inMemory(ctx.cwd);
+    for (const message of seedMessages) {
+      sessionManager.appendMessage(message);
     }
+
+    const { session } = await createAgentSession({
+      cwd: ctx.cwd,
+      sessionManager,
+      model: settings.model,
+      modelRuntime: getModelRuntime(ctx),
+      thinkingLevel: settings.thinkingLevel,
+      // Defaults to pi's coding-agent toolset (read/bash/edit/write);
+      // overridable via /btw config.
+      tools: toolNames,
+      resourceLoader: createBtwResourceLoader(
+        ctx,
+        mode === "readonly" ? [BTW_SYSTEM_PROMPT, BTW_READONLY_PROMPT] : [BTW_SYSTEM_PROMPT],
+      ),
+    });
 
     return { session, mode, subscriptions: new Set(), sideThreadStartIndex };
   }
@@ -2229,7 +2563,7 @@ export default function (pi: ExtensionAPI) {
   }
 
   async function ensureOverlay(ctx: ExtensionCommandContext | ExtensionContext): Promise<void> {
-    if (!ctx.hasUI) {
+    if (!canRenderBtwOverlay(ctx)) {
       return;
     }
     lastUiContext = ctx;
@@ -2249,7 +2583,8 @@ export default function (pi: ExtensionAPI) {
       if (activeBtwSession) {
         clearBtwSessionSubscriptions(activeBtwSession);
       }
-      runtime.handle?.hide();
+      // done() (via finish) hides the overlay and disposes the component;
+      // hiding here too would close whatever overlay sits underneath.
       if (overlayRuntime === runtime) {
         overlayRuntime = null;
       }
@@ -2273,15 +2608,19 @@ export default function (pi: ExtensionAPI) {
             () => transcriptState.entries,
             () => overlayStatus,
             () => pendingMode,
+            () => overlayWidthMode,
             (value) => {
               void submitFromOverlay(ctx, value);
             },
             () => {
-              void dismissOverlaySession();
+              void dismissOrAbortOverlaySession();
             },
             () => {
               overlayRuntime?.handle?.unfocus();
               overlayRuntime?.refresh?.();
+            },
+            () => {
+              void toggleOverlayWidth(ctx);
             },
           );
 
@@ -2296,7 +2635,6 @@ export default function (pi: ExtensionAPI) {
           };
           runtime.close = () => {
             overlayDraft = overlay.getDraft();
-            overlay.dispose();
             closeRuntime();
           };
 
@@ -2310,14 +2648,7 @@ export default function (pi: ExtensionAPI) {
         },
         {
           overlay: true,
-          overlayOptions: {
-            width: "78%",
-            minWidth: 72,
-            maxHeight: "78%",
-            anchor: "top-center",
-            margin: { top: 1, left: 2, right: 2 },
-            nonCapturing: true,
-          },
+          overlayOptions: getOverlayOptions(),
           onHandle: (handle) => {
             runtime.handle = handle;
             handle.focus();
@@ -2373,6 +2704,7 @@ export default function (pi: ExtensionAPI) {
         if (current.entries.length > 0) {
           segments.push(current);
         }
+        // SAFETY: custom entries filtered by customType carry `data` of this shape; fields are checked before use.
         const details = (entry as unknown as { data?: BtwResetDetails }).data;
         current = {
           mode: details?.mode ?? "contextual",
@@ -2383,6 +2715,7 @@ export default function (pi: ExtensionAPI) {
       }
 
       if (isCustomEntry(entry, BTW_ENTRY_TYPE)) {
+        // SAFETY: custom entries filtered by customType carry `data` of this shape; fields are checked before use.
         const details = (entry as unknown as { data?: BtwDetails }).data;
         if (details?.question && details.answer) {
           current.entries.push(details);
@@ -2407,7 +2740,7 @@ export default function (pi: ExtensionAPI) {
 
   function formatBtwSegmentLabel(segment: BtwThreadSegment, index: number): string {
     const first = segment.entries[0]?.question ?? "(untitled)";
-    const modeLabel = segment.mode === "tangent" ? "tangent" : "contextual";
+    const modeLabel = segment.mode;
     return `${index + 1}. "${truncateLabel(first, 60)}" \u00b7 ${segment.entries.length} exchange${
       segment.entries.length === 1 ? "" : "s"
     } \u00b7 ${modeLabel}`;
@@ -2502,8 +2835,24 @@ export default function (pi: ExtensionAPI) {
       return true;
     }
 
+    // Composer-only commands (no inline question) need the TUI overlay.
+    const requireInlineQuestion = (question: string): boolean => {
+      if (question || canRenderBtwOverlay(ctx)) {
+        return false;
+      }
+      notify(
+        ctx,
+        `/btw ${name} cannot open its composer outside Pi's TUI. Pass the question inline instead.`,
+        "warning",
+      );
+      return true;
+    };
+
     if (name === "ask") {
       const { question, save } = parseBtwArgs(trimmedArgs);
+      if (requireInlineQuestion(question)) {
+        return true;
+      }
       if (!question) {
         await ensureBtwSession(ctx, pendingMode);
         await ensureOverlay(ctx);
@@ -2520,6 +2869,9 @@ export default function (pi: ExtensionAPI) {
 
     if (name === "tangent") {
       const { question, save } = parseBtwArgs(trimmedArgs);
+      if (requireInlineQuestion(question)) {
+        return true;
+      }
       if (pendingMode !== "tangent") {
         await resetThread(ctx, true, "tangent");
       }
@@ -2534,9 +2886,31 @@ export default function (pi: ExtensionAPI) {
       return true;
     }
 
-    if (name === "new") {
-      await resetThread(ctx, true, "contextual");
+    if (name === "readonly") {
       const { question, save } = parseBtwArgs(trimmedArgs);
+      if (requireInlineQuestion(question)) {
+        return true;
+      }
+      if (pendingMode !== "readonly") {
+        await resetThread(ctx, true, "readonly");
+      }
+
+      if (!question) {
+        await ensureBtwSession(ctx, "readonly");
+        await ensureOverlay(ctx);
+        return true;
+      }
+
+      await runBtw(ctx, question, save, "readonly");
+      return true;
+    }
+
+    if (name === "new") {
+      const { question, save } = parseBtwArgs(trimmedArgs);
+      if (requireInlineQuestion(question)) {
+        return true;
+      }
+      await resetThread(ctx, true, "contextual");
       if (question) {
         await runBtw(ctx, question, save, "contextual");
       } else {
@@ -2685,7 +3059,7 @@ export default function (pi: ExtensionAPI) {
 
   function parseOverlayBtwCommand(value: string): { name: string; args: string } | null {
     const trimmed = value.trim();
-    const match = trimmed.match(/^\/btw(?::([^\s]+)|\s+([^\s]+))?(?:\s+([\s\S]*))?$/i);
+    const match = trimmed.match(/^\/(?:btw|side)(?::([^\s]+)|\s+([^\s]+))?(?:\s+([\s\S]*))?$/i);
     if (!match) {
       return null;
     }
@@ -2779,6 +3153,7 @@ export default function (pi: ExtensionAPI) {
     for (let i = 0; i < branch.length; i++) {
       if (isCustomEntry(branch[i], BTW_MODEL_OVERRIDE_TYPE)) {
         sawModelOverride = true;
+        // SAFETY: custom entries filtered by customType carry `data` of this shape; fields are checked before use.
         const details = (branch[i] as unknown as { data?: BtwModelOverrideDetails }).data;
         if (details?.action === "set") {
           const resolved = ctx.modelRegistry.find(details.provider, details.id);
@@ -2795,6 +3170,7 @@ export default function (pi: ExtensionAPI) {
 
       if (isCustomEntry(branch[i], BTW_THINKING_OVERRIDE_TYPE)) {
         sawThinkingOverride = true;
+        // SAFETY: custom entries filtered by customType carry `data` of this shape; fields are checked before use.
         const details = (branch[i] as unknown as { data?: BtwThinkingOverrideDetails }).data;
         btwThinkingOverride =
           details?.action === "set"
@@ -2806,6 +3182,7 @@ export default function (pi: ExtensionAPI) {
 
       if (isCustomEntry(branch[i], BTW_RESET_TYPE)) {
         lastResetIndex = i;
+        // SAFETY: custom entries filtered by customType carry `data` of this shape; fields are checked before use.
         const details = (branch[i] as unknown as { data?: BtwResetDetails }).data;
         pendingMode = details?.mode ?? "contextual";
       }
@@ -2831,6 +3208,7 @@ export default function (pi: ExtensionAPI) {
         continue;
       }
 
+      // SAFETY: custom entries filtered by customType carry `data` of this shape; fields are checked before use.
       const details = (entry as unknown as { data?: BtwDetails }).data;
       if (!details?.question || !details.answer) {
         continue;
@@ -2865,7 +3243,7 @@ export default function (pi: ExtensionAPI) {
     }
 
     const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-    if (!auth.ok || !auth.apiKey) {
+    if (!hasUsableModelAuth(ctx, model, auth)) {
       const message = auth.ok
         ? `No credentials available for ${model.provider}/${model.id}.`
         : auth.error;
@@ -2884,6 +3262,7 @@ export default function (pi: ExtensionAPI) {
 
     const session = sessionRuntime.session;
     const wasBusy = !ctx.isIdle();
+    const overlayAvailable = canRenderBtwOverlay(ctx);
     pendingMode = mode;
     const thinkingLevel = settings.thinkingLevel;
 
@@ -2898,11 +3277,12 @@ export default function (pi: ExtensionAPI) {
         throw new Error("BTW request finished without a response.");
       }
       if (response.stopReason === "aborted") {
-        removeTranscriptTurn(
+        // ponytail: aborted turns still count toward the exchange counter; track turn outcomes if that matters.
+        finishTranscriptTurn(
           transcriptState,
-          transcriptState.lastTurnId ?? transcriptState.currentTurnId,
+          transcriptState.currentTurnId ?? transcriptState.lastTurnId,
         );
-        setOverlayStatus("Request aborted.", ctx);
+        setOverlayStatus("⏹ Aborted. Press Esc again to dismiss the BTW overlay.", ctx);
         return;
       }
       if (response.stopReason === "error") {
@@ -2938,8 +3318,21 @@ export default function (pi: ExtensionAPI) {
       pendingThread.push(details);
       pi.appendEntry(BTW_ENTRY_TYPE, details);
 
-      const saveState = saveVisibleBtwNote(pi, details, saveRequested, wasBusy);
-      if (saveState === "saved") {
+      // Without the overlay the answer would be invisible, so always show it as a note.
+      const saveState = saveVisibleBtwNote(
+        pi,
+        details,
+        saveRequested || !overlayAvailable,
+        wasBusy,
+      );
+      if (!overlayAvailable) {
+        const message =
+          saveState === "queued"
+            ? "BTW response queued to display after the current turn finishes."
+            : "Displayed BTW response in the session.";
+        notify(ctx, message, "info");
+        setOverlayStatus(message, ctx);
+      } else if (saveState === "saved") {
         notify(ctx, "Saved BTW note to the session.", "info");
         setOverlayStatus("Saved BTW note to the session.", ctx);
       } else if (saveState === "queued") {
@@ -2992,7 +3385,7 @@ export default function (pi: ExtensionAPI) {
     }
 
     const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-    if (!auth.ok || !auth.apiKey) {
+    if (!hasUsableModelAuth(ctx, model, auth)) {
       throw new Error(
         auth.ok ? `No credentials available for ${model.provider}/${model.id}.` : auth.error,
       );
@@ -3044,7 +3437,14 @@ export default function (pi: ExtensionAPI) {
     const details = message.details as BtwDetails | undefined;
     const content =
       typeof message.content === "string" ? message.content : "[non-text btw message]";
-    const lines = [theme.fg("accent", theme.bold("[BTW]")), content];
+    const box = new Box(1, 1, (text) => theme.bg("customMessageBg", text));
+    box.addChild(new Text(theme.fg("accent", theme.bold("[BTW]")), 0, 0));
+    box.addChild(
+      new Markdown(content, 0, 0, getMarkdownTheme(), {
+        color: (text: string) => theme.fg("customMessageText", text),
+      }),
+    );
+    const lines: string[] = [];
 
     if (expanded && details) {
       lines.push(
@@ -3064,8 +3464,9 @@ export default function (pi: ExtensionAPI) {
       }
     }
 
-    const box = new Box(1, 1, (text) => theme.bg("customMessageBg", text));
-    box.addChild(new Text(lines.join("\n"), 0, 0));
+    if (lines.length > 0) {
+      box.addChild(new Text(lines.join("\n"), 0, 0));
+    }
     return box;
   });
 
@@ -3097,12 +3498,15 @@ export default function (pi: ExtensionAPI) {
     });
   }
 
-  pi.registerCommand("btw", {
-    description: "Run a BTW side conversation or manage its current thread.",
-    getArgumentCompletions: getBtwArgumentCompletions,
-    handler: async (args, ctx) => {
-      const command = parseBtwCommand(args);
-      await dispatchBtwCommand(command.name, command.args, ctx);
-    },
-  });
+  // `/side` is an alias for `/btw` (same thread, overlay and settings).
+  for (const commandName of ["btw", "side"]) {
+    pi.registerCommand(commandName, {
+      description: "Run a BTW side conversation or manage its current thread.",
+      getArgumentCompletions: getBtwArgumentCompletions,
+      handler: async (args, ctx) => {
+        const command = parseBtwCommand(args);
+        await dispatchBtwCommand(command.name, command.args, ctx);
+      },
+    });
+  }
 }

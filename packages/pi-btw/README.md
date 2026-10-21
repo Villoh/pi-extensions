@@ -15,13 +15,16 @@ A small pi extension that adds a `/btw` side conversation channel.
 - keeps a continuous BTW thread by default
 - supports `/btw tangent` for a contextless side thread that does not inherit the current main-session conversation
 - opens a focused BTW modal shell with its own composer and transcript
-- keeps the BTW overlay open while you switch focus back to the main editor with `Alt+/`
+- keeps the BTW overlay open while you switch focus back to the main editor with `Alt+/`, `Super+/`, or `Ctrl+Alt+W` (remappable)
 - keeps BTW thread entries out of the main agent's future context
 - supports BTW-only model and thinking overrides without changing the main thread settings
 - lets you inject the full thread, or a summary of it, back into the main agent
 - optionally saves an individual BTW exchange as a visible session note with `--save`
+- on RPC/SDK hosts (no TUI overlay), answers are shown as visible session notes and the question must be passed inline
 
 ## Install
+
+Supports Pi 0.85.1 through 1.x (type-checked against 0.85.1, 0.99.2 and 1.3.0).
 
 From npm:
 
@@ -50,6 +53,8 @@ pi -e /absolute/path/to/pi-btw
 /btw ask --save summarize the last error in one sentence
 /btw new let's start a fresh thread about auth
 /btw tangent brainstorm from first principles without using the current chat context
+/btw readonly what does this module do?
+/side what file defines this route?
 /btw model openai gpt-5-mini openai-responses
 /btw thinking low
 /btw inject implement the plan we just discussed
@@ -92,9 +97,13 @@ When the thread has more than one exchange, `/btw inject` and `/btw summarize` n
 
 ## Overlay controls
 
-- `Alt+/` toggles focus between BTW and the main editor without closing the overlay
-- `Ctrl+Alt+W` is a fallback focus toggle for terminals that do not deliver `Alt+/` as a usable shortcut
-- `Esc` still dismisses BTW immediately while the overlay is focused
+- `Alt+/`, `Super+/`, or `Ctrl+Alt+W` toggles focus between BTW and the main editor without closing the overlay (`Super+/` needs a terminal that reports Super, e.g. via the Kitty keyboard protocol)
+- set `PI_BTW_FOCUS_KEYS` to a comma-separated list of pi-tui key ids (e.g. `PI_BTW_FOCUS_KEYS="ctrl+/,ctrl+alt+b"`) to replace those focus keys; invalid entries are ignored and the defaults are kept if none are usable
+- typing `/` in the composer lists `/btw` and `/side`; after `/btw ` it lists the subcommands. Navigate with `Up`/`Down`, accept with `Tab` (or `Enter` on a partial match), dismiss the list with `Esc`. Other slash input is still sent to the sub-session as a normal prompt
+- `Alt+w` toggles between the framed window layout and a full-width layout without side borders, so terminal Shift+drag selection captures only the dialog's text
+- while BTW is streaming, the first `Esc` aborts the request (and drops queued follow-ups) and keeps the partial transcript visible; press `Esc` again to dismiss
+- while BTW is idle, `Esc` dismisses the overlay immediately
+- transcript, thinking, and saved `--save` notes render as Markdown
 - BTW now opens top-centered so the main session remains visible underneath it
 
 ### `/btw new [question]`
@@ -111,6 +120,19 @@ When the thread has more than one exchange, `/btw inject` and `/btw summarize` n
 - if you switch from `/btw` to `/btw tangent` (or back), the previous side thread is cleared so the modes do not mix
 - opens or refreshes the same focused BTW modal shell
 - with `--save`, also saves that single exchange as a visible session note
+
+### `/btw readonly [--save] <question>`
+
+- starts or continues an enforced read-only side thread
+- inherits the current main-session conversation, like `/btw ask`
+- its child session only has `read`, `grep`, `find` and `ls`; `bash`, `edit` and `write` are never available, and the tools set in `/btw config` is ignored for it
+- the overlay title shows `read-only`
+- switching between `ask`, `tangent` and `readonly` clears the previous side thread so the capability boundary stays unambiguous
+- with `--save`, also saves that single exchange as a visible session note
+
+### `/side`
+
+- alias for `/btw` (same thread, overlay, model and thinking settings)
 
 ### `/btw clear`
 
