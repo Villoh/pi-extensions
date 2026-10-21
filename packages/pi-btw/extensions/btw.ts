@@ -1529,6 +1529,11 @@ function saveVisibleBtwNote(
   return "saved";
 }
 
+/** The overlay needs Pi's TUI; RPC/SDK hosts report `hasUI` but cannot open it. */
+function canRenderBtwOverlay(ctx: ExtensionContext | ExtensionCommandContext): boolean {
+  return ctx.hasUI && ctx.mode === "tui";
+}
+
 function notify(
   ctx: ExtensionContext | ExtensionCommandContext,
   message: string,
@@ -2377,7 +2382,7 @@ export default function (pi: ExtensionAPI) {
   }
 
   async function showBtwConfig(ctx: ExtensionCommandContext): Promise<void> {
-    if (!ctx.hasUI) {
+    if (!canRenderBtwOverlay(ctx)) {
       const settings = await resolveBtwSettings(ctx);
       notify(
         ctx,
@@ -2558,7 +2563,7 @@ export default function (pi: ExtensionAPI) {
   }
 
   async function ensureOverlay(ctx: ExtensionCommandContext | ExtensionContext): Promise<void> {
-    if (!ctx.hasUI) {
+    if (!canRenderBtwOverlay(ctx)) {
       return;
     }
     lastUiContext = ctx;
@@ -2830,8 +2835,24 @@ export default function (pi: ExtensionAPI) {
       return true;
     }
 
+    // Composer-only commands (no inline question) need the TUI overlay.
+    const requireInlineQuestion = (question: string): boolean => {
+      if (question || canRenderBtwOverlay(ctx)) {
+        return false;
+      }
+      notify(
+        ctx,
+        `/btw ${name} cannot open its composer outside Pi's TUI. Pass the question inline instead.`,
+        "warning",
+      );
+      return true;
+    };
+
     if (name === "ask") {
       const { question, save } = parseBtwArgs(trimmedArgs);
+      if (requireInlineQuestion(question)) {
+        return true;
+      }
       if (!question) {
         await ensureBtwSession(ctx, pendingMode);
         await ensureOverlay(ctx);
@@ -2848,6 +2869,9 @@ export default function (pi: ExtensionAPI) {
 
     if (name === "tangent") {
       const { question, save } = parseBtwArgs(trimmedArgs);
+      if (requireInlineQuestion(question)) {
+        return true;
+      }
       if (pendingMode !== "tangent") {
         await resetThread(ctx, true, "tangent");
       }
@@ -2864,6 +2888,9 @@ export default function (pi: ExtensionAPI) {
 
     if (name === "readonly") {
       const { question, save } = parseBtwArgs(trimmedArgs);
+      if (requireInlineQuestion(question)) {
+        return true;
+      }
       if (pendingMode !== "readonly") {
         await resetThread(ctx, true, "readonly");
       }
@@ -2879,8 +2906,11 @@ export default function (pi: ExtensionAPI) {
     }
 
     if (name === "new") {
-      await resetThread(ctx, true, "contextual");
       const { question, save } = parseBtwArgs(trimmedArgs);
+      if (requireInlineQuestion(question)) {
+        return true;
+      }
+      await resetThread(ctx, true, "contextual");
       if (question) {
         await runBtw(ctx, question, save, "contextual");
       } else {
@@ -3232,6 +3262,7 @@ export default function (pi: ExtensionAPI) {
 
     const session = sessionRuntime.session;
     const wasBusy = !ctx.isIdle();
+    const overlayAvailable = canRenderBtwOverlay(ctx);
     pendingMode = mode;
     const thinkingLevel = settings.thinkingLevel;
 
@@ -3287,8 +3318,21 @@ export default function (pi: ExtensionAPI) {
       pendingThread.push(details);
       pi.appendEntry(BTW_ENTRY_TYPE, details);
 
-      const saveState = saveVisibleBtwNote(pi, details, saveRequested, wasBusy);
-      if (saveState === "saved") {
+      // Without the overlay the answer would be invisible, so always show it as a note.
+      const saveState = saveVisibleBtwNote(
+        pi,
+        details,
+        saveRequested || !overlayAvailable,
+        wasBusy,
+      );
+      if (!overlayAvailable) {
+        const message =
+          saveState === "queued"
+            ? "BTW response queued to display after the current turn finishes."
+            : "Displayed BTW response in the session.";
+        notify(ctx, message, "info");
+        setOverlayStatus(message, ctx);
+      } else if (saveState === "saved") {
         notify(ctx, "Saved BTW note to the session.", "info");
         setOverlayStatus("Saved BTW note to the session.", ctx);
       } else if (saveState === "queued") {
