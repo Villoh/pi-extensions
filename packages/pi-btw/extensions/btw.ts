@@ -45,6 +45,7 @@ import {
   visibleWidth,
   wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
+import { loadBtwExtensionResources, readBtwExtensionSources } from "./btw-extension-tools.ts";
 
 const BTW_MESSAGE_TYPE = "btw-note";
 const BTW_ENTRY_TYPE = "btw-thread-entry";
@@ -100,10 +101,9 @@ const BTW_FOCUS_SHORTCUTS_LABEL = describeFocusShortcuts(BTW_FOCUS_SHORTCUTS);
 export const BTW_SUB_SESSION_TOOLS = ["read", "bash", "edit", "write"] as const;
 export const BTW_SUB_SESSION_TOOL_SET = new Set<string>(BTW_SUB_SESSION_TOOLS);
 
-// Every tool name pi's `tools:` allowlist accepts without loading any
-// extension/MCP registration. This is the full pickable set for `/btw
-// config`'s "Tools" row; selecting anything else would silently no-op since
-// createBtwResourceLoader never loads extensions (see its docstring).
+// Every built-in tool name pi's `tools:` allowlist accepts. This is the full
+// pickable set for `/btw config`'s "Tools" row. Extension tools are opt-in
+// through `btw.json` instead (see btw-extension-tools.ts).
 const BTW_AVAILABLE_TOOL_NAMES = ["read", "bash", "edit", "write", "grep", "find", "ls"] as const;
 
 /**
@@ -319,6 +319,8 @@ type BtwSessionRuntime = {
   subscriptions: Set<() => void>;
   sideThreadStartIndex: number;
   abortPromise?: Promise<void>;
+  /** True when the child loaded `btw.json` extensions and must be shut down through them. */
+  hasExtensions: boolean;
 };
 
 type OverlayRuntime = {
@@ -355,20 +357,35 @@ function stripDynamicSystemPromptFooter(systemPrompt: string): string {
 
 function createBtwResourceLoader(
   ctx: ExtensionCommandContext,
+  tools: readonly string[] | (() => readonly string[]),
   appendSystemPrompt: string[] = [BTW_SYSTEM_PROMPT],
+  extensionResources?: ResourceLoader,
 ): ResourceLoader {
-  // Deliberately empty: no extensions/MCP servers are loaded into BTW
-  // sub-sessions. Doing so would require the internal (non-exported)
-  // path-scoped extension loader, or the public discoverAndLoadExtensions()
-  // which always rescans every standard extension directory too - i.e. no
-  // way to load just a chosen few without loading everything the main
-  // session already has running.
-  const extensionsResult = {
+  // Nothing from the parent is loaded into BTW children. The only extensions
+  // are the explicit `btw.json` allowlist, resolved by loadBtwExtensionResources.
+  const extensionsResult = extensionResources?.getExtensions() ?? {
     extensions: [],
     errors: [],
     runtime: createExtensionRuntime(),
   };
   const systemPrompt = stripDynamicSystemPromptFooter(ctx.getSystemPrompt());
+  // The parent's prompt and seeded history can claim tools this child lacks
+  // (the main session's toolset, a different mode), so state the real ones.
+  const capabilities = () => {
+    const available = typeof tools === "function" ? tools() : tools;
+    return [
+      "<btw_capabilities>",
+      `Working directory for built-in file and shell tools: ${ctx.cwd}.`,
+      available.length > 0
+        ? `Available tools in this BTW session: ${available.join(", ")}.`
+        : "No tools are available in this BTW session.",
+      "This capability list is authoritative for this child session.",
+      "Tool and skill instructions inherited from the main session may describe tools that are unavailable here.",
+      "Previous tool calls in inherited conversation are historical context, not available capabilities.",
+      "Only call tools listed above; do not infer additional tools from the main session.",
+      "</btw_capabilities>",
+    ].join("\n");
+  };
 
   return {
     getExtensions: () => extensionsResult,
@@ -378,7 +395,7 @@ function createBtwResourceLoader(
     getAgentsFiles: () => ({ agentsFiles: [] }),
     getSystemPrompt: () => systemPrompt,
     getSystemPromptSource: () => undefined,
-    getAppendSystemPrompt: () => appendSystemPrompt,
+    getAppendSystemPrompt: () => [...appendSystemPrompt, capabilities()],
     getAppendSystemPromptSources: () => [],
     extendResources: () => {},
     reload: async () => {},
@@ -2183,7 +2200,17 @@ export default function (pi: ExtensionAPI) {
 
     clearBtwSessionSubscriptions(current);
     await requestBtwSessionAbort(current);
-    current.session.dispose();
+    await disposeChildSession(current.session, current.hasExtensions);
+  }
+
+  async function disposeChildSession(session: AgentSession, hasExtensions: boolean): Promise<void> {
+    try {
+      if (hasExtensions) {
+        await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
+      }
+    } finally {
+      session.dispose();
+    }
   }
 
   function requestBtwSessionAbort(sessionRuntime: BtwSessionRuntime): Promise<void> {
@@ -2526,22 +2553,97 @@ export default function (pi: ExtensionAPI) {
       sessionManager.appendMessage(message);
     }
 
+    // Extension tools are opt-in via btw.json. Read-only threads never load
+    // them, so their tool boundary stays structural.
+    const agentDir = getAgentDir();
+    const sources =
+      mode === "readonly"
+        ? []
+        : await readBtwExtensionSources({
+            cwd: ctx.cwd,
+            agentDir,
+            projectTrusted: ctx.isProjectTrusted(),
+          });
+    const extensionResources =
+      sources.length > 0
+        ? await loadBtwExtensionResources({
+            cwd: ctx.cwd,
+            agentDir,
+            sources,
+            parentExtensionPaths: [
+              ...pi.getAllTools().map((tool) => tool.sourceInfo.path),
+              ...pi
+                .getCommands()
+                .flatMap((command) => (command.sourceInfo ? [command.sourceInfo.path] : [])),
+            ],
+          })
+        : undefined;
+
+    let childSession: AgentSession | undefined;
     const { session } = await createAgentSession({
       cwd: ctx.cwd,
       sessionManager,
       model: settings.model,
       modelRuntime: getModelRuntime(ctx),
       thinkingLevel: settings.thinkingLevel,
-      // Defaults to pi's coding-agent toolset (read/bash/edit/write);
-      // overridable via /btw config.
-      tools: toolNames,
+      // Built-ins default to pi's coding-agent toolset (read/bash/edit/write),
+      // overridable via /btw config. With extensions the tool registry must stay
+      // live for their tools, so the built-in allowlist is applied afterwards.
+      ...(extensionResources ? { noTools: "builtin" as const } : { tools: toolNames }),
       resourceLoader: createBtwResourceLoader(
         ctx,
+        () => childSession?.getActiveToolNames() ?? toolNames,
         mode === "readonly" ? [BTW_SYSTEM_PROMPT, BTW_READONLY_PROMPT] : [BTW_SYSTEM_PROMPT],
+        extensionResources,
       ),
     });
+    childSession = session;
 
-    return { session, mode, subscriptions: new Set(), sideThreadStartIndex };
+    const hasExtensions = !!extensionResources;
+    if (extensionResources) {
+      try {
+        const extensions = extensionResources.getExtensions().extensions;
+        const extensionToolNames = new Set<string>();
+        for (const extension of extensions) {
+          for (const name of extension.tools.keys()) {
+            if (
+              BTW_AVAILABLE_TOOL_NAMES.some((builtin) => builtin === name) ||
+              extensionToolNames.has(name)
+            ) {
+              throw new Error(`BTW extension tool name collision: ${name}.`);
+            }
+            extensionToolNames.add(name);
+          }
+        }
+        session.setActiveToolsByName([...toolNames, ...extensionToolNames]);
+
+        const startupErrors: string[] = [];
+        let starting = true;
+        await session.bindExtensions({
+          onError: (error) => {
+            const message = `${error.extensionPath}: ${error.error}`;
+            if (starting) {
+              startupErrors.push(message);
+            } else {
+              notify(ctx, `BTW extension error: ${message}`, "error");
+            }
+          },
+        });
+        starting = false;
+        if (startupErrors.length > 0) {
+          throw new Error(startupErrors.join("\n"));
+        }
+      } catch (error) {
+        try {
+          await session.abort();
+        } finally {
+          await disposeChildSession(session, true);
+        }
+        throw error;
+      }
+    }
+
+    return { session, mode, subscriptions: new Set(), sideThreadStartIndex, hasExtensions };
   }
 
   async function ensureBtwSession(
@@ -3397,7 +3499,7 @@ export default function (pi: ExtensionAPI) {
       modelRuntime: getModelRuntime(ctx),
       thinkingLevel: "off",
       tools: [],
-      resourceLoader: createBtwResourceLoader(ctx, [BTW_SUMMARIZE_SYSTEM_PROMPT]),
+      resourceLoader: createBtwResourceLoader(ctx, [], [BTW_SUMMARIZE_SYSTEM_PROMPT]),
     });
 
     try {

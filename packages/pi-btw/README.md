@@ -80,6 +80,23 @@ Type and submit another question while BTW is still answering the previous one â
 
 When the thread has more than one exchange, `/btw inject` and `/btw summarize` now ask how much to bring to main: the entire thread, the last exchange only, or everything from a given exchange onward.
 
+### Extension tools (opt-in)
+
+By default BTW children only get Pi's built-in tools. To give them tools from specific extensions, list the sources in `btw.json`:
+
+```json
+{ "extensions": ["npm:some-pi-extension", "./my-extension.ts"] }
+```
+
+- global file: `<pi agent dir>/btw.json`; project file: `.pi/btw.json` (only read for trusted projects)
+- a project list replaces the global one, including an explicit empty list
+- local paths resolve relative to the file that lists them; `npm:` and `git:` sources are installed into a separate BTW-owned root so they do not share module state with the main session
+- a local path that the main session already loaded is rejected; use an `npm:`/`git:` source instead
+- applies to `/btw ask`, `/btw new` and `/btw tangent`; `/btw readonly` never loads extensions and summarize stays tool-free
+- an invalid `btw.json`, a tool name that collides with a built-in, or a startup error fails the request with the real error instead of being ignored
+- this is separate from `pi-btw.json` (model/thinking/built-in tools defaults); `btw.json` only supports the `extensions` key
+- the child's system prompt states the tools it actually has, overriding tool claims inherited from the main session
+
 ## Commands
 
 ### `/btw ask [--save] <question>`
