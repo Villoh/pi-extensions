@@ -189,6 +189,13 @@ const BTW_SYSTEM_PROMPT = [
   "Do not act as if you need to continue unfinished work from the main session unless the user explicitly asks you to prepare something for injection back to it.",
 ].join(" ");
 
+// Fixed, never user-configurable: the read-only boundary is structural (the
+// child session only has these tools), not prompt-based.
+export const BTW_READONLY_TOOLS = ["read", "grep", "find", "ls"] as const;
+
+const BTW_READONLY_PROMPT =
+  "This side thread is read-only. You can only use read, grep, find and ls; you cannot run commands, edit or write files, regardless of what the main session could do.";
+
 const BTW_SUMMARIZE_SYSTEM_PROMPT =
   "Summarize the side conversation concisely. Preserve key decisions, plans, insights, risks, and action items. Output only the summary.";
 
@@ -197,7 +204,7 @@ const BTW_CONTINUE_THREAD_USER_TEXT =
 const BTW_CONTINUE_THREAD_ASSISTANT_TEXT = "Understood, continuing our side conversation.";
 
 type SessionThinkingLevel = "off" | AiThinkingLevel;
-type BtwThreadMode = "contextual" | "tangent";
+type BtwThreadMode = "contextual" | "tangent" | "readonly";
 type SessionModel = NonNullable<ExtensionCommandContext["model"]>;
 /**
  * Loose model reference parsed from `/btw model <provider> <id> <api>` and persisted to
@@ -425,6 +432,11 @@ const BTW_COMMAND_ARGUMENTS = [
     label: "tangent",
     description: "Start a contextless thread",
   },
+  {
+    value: "readonly",
+    label: "readonly",
+    description: "Contextual thread limited to read/grep/find/ls",
+  },
   { value: "clear", label: "clear", description: "Clear the current thread" },
   {
     value: "inject",
@@ -461,6 +473,8 @@ const BTW_USAGE = [
   "  /btw ask [--save] <question>",
   "  /btw new [--save] [question]",
   "  /btw tangent [--save] [question]",
+  "  /btw readonly [--save] [question]   (read/grep/find/ls only)",
+  "  /side ...                           (alias for /btw)",
   "  /btw clear | resume | help",
   "  /btw inject [instructions]",
   "  /btw summarize [instructions]",
@@ -547,7 +561,13 @@ type BtwConfigFile = {
   tools?: string[];
 };
 
-function resolveBtwToolNames(config: BtwConfigFile): string[] {
+export function resolveBtwToolNames(
+  config: BtwConfigFile,
+  mode: BtwThreadMode = "contextual",
+): string[] {
+  if (mode === "readonly") {
+    return [...BTW_READONLY_TOOLS];
+  }
   return config.tools && config.tools.length > 0 ? config.tools : [...BTW_SUB_SESSION_TOOLS];
 }
 
@@ -680,7 +700,7 @@ function buildBtwSeedState(
 ): { messages: Message[]; sideThreadStartIndex: number } {
   const messages: Message[] = [];
 
-  if (mode === "contextual") {
+  if (mode !== "tangent") {
     const contextMessages: Message[] = [];
     try {
       contextMessages.push(
@@ -1496,7 +1516,8 @@ const BTW_OVERLAY_CHROME_LINES = 9;
 const BTW_BLOCK_INDENT = "    ";
 
 function getOverlayTitle(mode: BtwThreadMode): string {
-  return mode === "tangent" ? "BTW tangent" : "BTW";
+  if (mode === "tangent") return "BTW tangent";
+  return mode === "readonly" ? "BTW · read-only" : "BTW";
 }
 
 function buildTranscriptBadge(
@@ -2381,7 +2402,7 @@ export default function (pi: ExtensionAPI) {
     }
 
     const config = readBtwConfig();
-    const toolNames = resolveBtwToolNames(config);
+    const toolNames = resolveBtwToolNames(config, mode);
 
     const { messages: seedMessages, sideThreadStartIndex } = buildBtwSeedState(
       ctx,
@@ -2406,7 +2427,10 @@ export default function (pi: ExtensionAPI) {
       // Defaults to pi's coding-agent toolset (read/bash/edit/write);
       // overridable via /btw config.
       tools: toolNames,
-      resourceLoader: createBtwResourceLoader(ctx),
+      resourceLoader: createBtwResourceLoader(
+        ctx,
+        mode === "readonly" ? [BTW_SYSTEM_PROMPT, BTW_READONLY_PROMPT] : [BTW_SYSTEM_PROMPT],
+      ),
     });
 
     return { session, mode, subscriptions: new Set(), sideThreadStartIndex };
@@ -2608,7 +2632,7 @@ export default function (pi: ExtensionAPI) {
 
   function formatBtwSegmentLabel(segment: BtwThreadSegment, index: number): string {
     const first = segment.entries[0]?.question ?? "(untitled)";
-    const modeLabel = segment.mode === "tangent" ? "tangent" : "contextual";
+    const modeLabel = segment.mode;
     return `${index + 1}. "${truncateLabel(first, 60)}" \u00b7 ${segment.entries.length} exchange${
       segment.entries.length === 1 ? "" : "s"
     } \u00b7 ${modeLabel}`;
@@ -2732,6 +2756,22 @@ export default function (pi: ExtensionAPI) {
       }
 
       await runBtw(ctx, question, save, "tangent");
+      return true;
+    }
+
+    if (name === "readonly") {
+      const { question, save } = parseBtwArgs(trimmedArgs);
+      if (pendingMode !== "readonly") {
+        await resetThread(ctx, true, "readonly");
+      }
+
+      if (!question) {
+        await ensureBtwSession(ctx, "readonly");
+        await ensureOverlay(ctx);
+        return true;
+      }
+
+      await runBtw(ctx, question, save, "readonly");
       return true;
     }
 
@@ -3311,12 +3351,15 @@ export default function (pi: ExtensionAPI) {
     });
   }
 
-  pi.registerCommand("btw", {
-    description: "Run a BTW side conversation or manage its current thread.",
-    getArgumentCompletions: getBtwArgumentCompletions,
-    handler: async (args, ctx) => {
-      const command = parseBtwCommand(args);
-      await dispatchBtwCommand(command.name, command.args, ctx);
-    },
-  });
+  // `/side` is an alias for `/btw` (same thread, overlay and settings).
+  for (const commandName of ["btw", "side"]) {
+    pi.registerCommand(commandName, {
+      description: "Run a BTW side conversation or manage its current thread.",
+      getArgumentCompletions: getBtwArgumentCompletions,
+      handler: async (args, ctx) => {
+        const command = parseBtwCommand(args);
+        await dispatchBtwCommand(command.name, command.args, ctx);
+      },
+    });
+  }
 }

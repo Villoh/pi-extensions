@@ -3,9 +3,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  BTW_READONLY_TOOLS,
   BTW_SUB_SESSION_TOOL_SET,
   describeFocusShortcuts,
   resolveBtwFocusShortcuts,
+  resolveBtwToolNames,
   stripForeignToolActivity,
   withoutParentToolDeclarations,
 } from "./btw.ts";
@@ -119,4 +121,11 @@ test("PI_BTW_FOCUS_KEYS replaces defaults, drops invalid ids, falls back when em
   );
   assert.deepEqual(resolveBtwFocusShortcuts({ PI_BTW_FOCUS_KEYS: "nope,," }), defaults);
   assert.equal(describeFocusShortcuts(defaults), "Alt+/, Super+/ or Ctrl+Alt+W");
+});
+
+test("readonly mode always uses the fixed read-only tools, ignoring configured tools", () => {
+  const configured = { tools: ["read", "bash", "edit", "write"] };
+  assert.deepEqual(resolveBtwToolNames(configured, "readonly"), [...BTW_READONLY_TOOLS]);
+  assert.deepEqual(resolveBtwToolNames(configured, "contextual"), configured.tools);
+  assert.ok(!BTW_READONLY_TOOLS.some((tool) => ["bash", "edit", "write"].includes(tool)));
 });

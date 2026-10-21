@@ -50,6 +50,8 @@ pi -e /absolute/path/to/pi-btw
 /btw ask --save summarize the last error in one sentence
 /btw new let's start a fresh thread about auth
 /btw tangent brainstorm from first principles without using the current chat context
+/btw readonly what does this module do?
+/side what file defines this route?
 /btw model openai gpt-5-mini openai-responses
 /btw thinking low
 /btw inject implement the plan we just discussed
@@ -114,6 +116,19 @@ When the thread has more than one exchange, `/btw inject` and `/btw summarize` n
 - if you switch from `/btw` to `/btw tangent` (or back), the previous side thread is cleared so the modes do not mix
 - opens or refreshes the same focused BTW modal shell
 - with `--save`, also saves that single exchange as a visible session note
+
+### `/btw readonly [--save] <question>`
+
+- starts or continues an enforced read-only side thread
+- inherits the current main-session conversation, like `/btw ask`
+- its child session only has `read`, `grep`, `find` and `ls`; `bash`, `edit` and `write` are never available, and the tools set in `/btw config` is ignored for it
+- the overlay title shows `read-only`
+- switching between `ask`, `tangent` and `readonly` clears the previous side thread so the capability boundary stays unambiguous
+- with `--save`, also saves that single exchange as a visible session note
+
+### `/side`
+
+- alias for `/btw` (same thread, overlay, model and thinking settings)
 
 ### `/btw clear`
 
